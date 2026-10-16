@@ -123,10 +123,12 @@ fn labels(result: Option<Value>, list: &str, id: &str) -> HashMap<String, String
     map
 }
 
+/// Most recently focused first; agents never focused follow, by urgency.
 fn parse_agents(
     agents: &Value,
     workspaces: &HashMap<String, String>,
     tabs: &HashMap<String, String>,
+    focused: &HashMap<String, u64>,
 ) -> Vec<Agent> {
     let mut list: Vec<Agent> = agents["agents"]
         .as_array()
@@ -145,15 +147,63 @@ fn parse_agents(
             }
         })
         .collect();
-    list.sort_by(|a, b| (a.status, &a.workspace, &a.tab).cmp(&(b.status, &b.workspace, &b.tab)));
+    let last = |a: &Agent| std::cmp::Reverse(focused.get(&a.pane_id).copied().unwrap_or(0));
+    list.sort_by(|a, b| {
+        (last(a), a.status, &a.workspace, &a.tab).cmp(&(last(b), b.status, &b.workspace, &b.tab))
+    });
     list
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// When each pane was last focused, in `$HERDR_PLUGIN_STATE_DIR/focus.json`.
+fn focus_path() -> Option<PathBuf> {
+    std::env::var("HERDR_PLUGIN_STATE_DIR")
+        .ok()
+        .map(|d| PathBuf::from(d).join("focus.json"))
+}
+
+fn load_focus() -> HashMap<String, u64> {
+    focus_path()
+        .and_then(|p| fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| {
+            v.as_object().map(|o| {
+                o.iter()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_u64()?)))
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// The `pane.focused` hook: stamp the pane with the current time.
+// ponytail: unlocked read-modify-write; two focus events in the same instant can drop one stamp.
+fn track_focus() {
+    let Some(pane) = std::env::var("HERDR_PLUGIN_EVENT_JSON")
+        .ok()
+        .and_then(|e| serde_json::from_str::<Value>(&e).ok())
+        .and_then(|v| v["data"]["pane_id"].as_str().map(str::to_string))
+    else {
+        return;
+    };
+    let mut focus = load_focus();
+    focus.insert(pane, now_millis());
+    if let Some(p) = focus_path() {
+        let _ = fs::write(p, serde_json::to_string(&focus).unwrap_or_default());
+    }
 }
 
 fn load_agents() -> Vec<Agent> {
     let workspaces = labels(herdr(&["workspace", "list"]), "workspaces", "workspace_id");
     let tabs = labels(herdr(&["tab", "list"]), "tabs", "tab_id");
+    let focused = load_focus();
     herdr(&["agent", "list"])
-        .map(|a| parse_agents(&a, &workspaces, &tabs))
+        .map(|a| parse_agents(&a, &workspaces, &tabs, &focused))
         .unwrap_or_default()
 }
 
@@ -238,6 +288,8 @@ fn todo_dirs(config: &str) -> Vec<PathBuf> {
 struct Memory {
     tabs: HashMap<String, String>,
     crossed: Vec<String>,
+    /// When each todo was last opened or crossed, so recent ones sort first.
+    used: HashMap<String, u64>,
 }
 
 impl Memory {
@@ -260,7 +312,17 @@ impl Memory {
             .flatten()
             .filter_map(|v| Some(v.as_str()?.to_string()))
             .collect();
-        Memory { tabs, crossed }
+        let used = v["used"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(k, v)| Some((k.clone(), v.as_u64()?)))
+            .collect();
+        Memory {
+            tabs,
+            crossed,
+            used,
+        }
     }
 
     fn load() -> Self {
@@ -273,12 +335,17 @@ impl Memory {
 
     fn save(&self) {
         if let Some(p) = Self::path() {
-            let v = serde_json::json!({ "tabs": self.tabs, "crossed": self.crossed });
+            let v = serde_json::json!({ "tabs": self.tabs, "crossed": self.crossed, "used": self.used });
             let _ = fs::write(p, v.to_string());
         }
     }
 
+    fn touch(&mut self, text: &str) {
+        self.used.insert(text.to_string(), now_millis());
+    }
+
     fn toggle_crossed(&mut self, text: &str) {
+        self.touch(text);
         match self.crossed.iter().position(|t| t == text) {
             Some(i) => {
                 self.crossed.remove(i);
@@ -298,6 +365,8 @@ fn open_todo(memory: &mut Memory, todo: &Todo) {
     if let Some(tab) = memory.tabs.get(&todo.text)
         && herdr(&["tab", "focus", tab]).is_some()
     {
+        memory.touch(&todo.text);
+        memory.save();
         return;
     }
     let label: String = todo.text.chars().take(30).collect();
@@ -319,6 +388,7 @@ fn open_todo(memory: &mut Memory, todo: &Todo) {
         ])
         .output();
     memory.tabs.insert(todo.text.clone(), tab.to_string());
+    memory.touch(&todo.text);
     memory.save();
 }
 
@@ -414,12 +484,18 @@ impl App {
             .collect()
     }
 
+    /// Most recently opened or crossed first; the rest keep their order in the notes.
     fn visible_todos(&self) -> Vec<&Todo> {
-        self.todos
+        let mut list: Vec<&Todo> = self
+            .todos
             .iter()
             .filter(|t| self.group == 0 || t.group == self.groups[self.group - 1].0)
             .filter(|t| matches(&self.todo_filter, &[&t.text, &t.group]))
-            .collect()
+            .collect();
+        list.sort_by_key(|t| {
+            std::cmp::Reverse(self.memory.used.get(&t.text).copied().unwrap_or(0))
+        });
+        list
     }
 
     fn filter_mut(&mut self) -> &mut String {
@@ -480,6 +556,10 @@ impl App {
 }
 
 fn main() -> std::io::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("track") {
+        track_focus();
+        return Ok(());
+    }
     let mut terminal = ratatui::init();
     let result = run(&mut terminal);
     ratatui::restore();
@@ -574,6 +654,8 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
                 if let Some(text) = app.selected_todo().map(|t| t.text.clone()) {
                     app.memory.toggle_crossed(&text);
                     app.memory.save();
+                    // It just moved to the top; keep it selected.
+                    app.todo_list.select(Some(0));
                 }
             }
             _ => {}
@@ -1023,6 +1105,48 @@ mod tests {
     }
 
     #[test]
+    fn agents_sort_most_recently_focused_first() {
+        let agents = json!({"agents": [
+            {"agent_status": "blocked", "pane_id": "p1"},
+            {"agent_status": "idle", "pane_id": "p2"},
+            {"agent_status": "done", "pane_id": "p3"},
+        ]});
+        let focused = HashMap::from([("p2".into(), 200), ("p3".into(), 100)]);
+        let list = parse_agents(&agents, &HashMap::new(), &HashMap::new(), &focused);
+        let order: Vec<_> = list.iter().map(|a| a.pane_id.as_str()).collect();
+        assert_eq!(order, vec!["p2", "p3", "p1"]);
+    }
+
+    #[test]
+    fn todos_sort_most_recently_used_first() {
+        let todo = |t: &str| Todo {
+            group: "g".into(),
+            text: t.into(),
+        };
+        let mut app = App {
+            agents: vec![],
+            todos: vec![todo("a"), todo("b"), todo("c")],
+            groups: vec![],
+            group: 0,
+            focus: Focus::Todos,
+            agent_list: ListState::default(),
+            todo_list: ListState::default(),
+            configured: true,
+            memory: Memory::default(),
+            agent_filter: String::new(),
+            todo_filter: String::new(),
+            typing: false,
+        };
+        app.memory.used = HashMap::from([("c".into(), 200), ("b".into(), 100)]);
+        let order: Vec<_> = app
+            .visible_todos()
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect();
+        assert_eq!(order, vec!["c", "b", "a"]);
+    }
+
+    #[test]
     fn matches_every_word_case_insensitively_across_fields() {
         assert!(matches("", &["anything"]));
         assert!(matches("API fix", &["api", "fix login"]));
@@ -1097,7 +1221,7 @@ mod tests {
             ("t2".into(), "fix".into()),
             ("t3".into(), "docs".into()),
         ]);
-        let list = parse_agents(&agents, &workspaces, &tabs);
+        let list = parse_agents(&agents, &workspaces, &tabs, &HashMap::new());
         let order: Vec<_> = list
             .iter()
             .map(|a| {

@@ -21,17 +21,20 @@ in your notes.
   Enter go to agent  Tab to todos  …     │  Enter Claude tab  Space cross out  …
 ```
 
-- **Agents** are sorted by urgency: blocked, done, working, idle. Same symbols and colors as
+- **Agents** are sorted most recently focused first; agents you have not focused yet follow,
+  by urgency: blocked, done, working, idle. Same symbols and colors as
   the Herdr sidebar. The list refreshes every 2 seconds. Enter jumps to the agent.
 - **Todos** are every open Markdown checkbox (`- [ ] ...`) in the folders you configure.
   A `#todo/<group>` tag puts it in a group; untagged ones go under `other`. Code blocks are
-  skipped. The bars show how many each group has.
+  skipped. The bars show how many each group has. Todos you opened or crossed most recently
+  sit at the top.
 - **Enter on a todo** opens a new tab running `claude "<todo>"` and remembers the link (`↗`).
   Enter again goes back to that tab instead of starting another; if the tab was closed, a
   new one opens.
 - **Space** crosses a todo out (`☒`), Space again undoes it. This only marks it in the
   overview; your notes are never written to.
-- Links and cross-outs live in the plugin's state directory (`$HERDR_PLUGIN_STATE_DIR`).
+- Links, cross-outs and focus times live in the plugin's state directory
+  (`$HERDR_PLUGIN_STATE_DIR`). A `pane.focused` hook records when you last focused each pane.
 - **`/`** filters the panel you are in, like Herdr Recent Navigator: type to narrow the list
   (every word must match), Esc stops typing and keeps the filter, Esc again clears it.
 - Each panel's footer lists every key it takes. On a narrow client, such as Herdr on a phone,
