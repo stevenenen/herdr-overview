@@ -8,7 +8,7 @@ in your notes.
 ─────────────────────────────────────────│─────────────────────────────────
  > / to filter                        6  │ > pass▏                     1/24
 ─────────────────────────────────────────│─────────────────────────────────
-      Workspace   Tab       Title        │   all    24
+      Tab         Workspace Title        │   all    24
  1. × api         auth      Fix login t… │   work  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰ 14
  2. ✓ web         docs      Update READ… │   home  ▰▰▰▰▰▰▰ 7
  3. ✓ web         main      Claude Code  │   other ▰▰ 3

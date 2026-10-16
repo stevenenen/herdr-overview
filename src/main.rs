@@ -836,14 +836,14 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
             ));
         }
     }
-    // Index, icon, then workspace, tab and title columns.
+    // Index, icon, then tab, workspace and title columns.
     let rest = (area.width as usize).saturating_sub(6);
     let (ws_w, tab_w) = (rest * 3 / 10, rest * 3 / 10);
     let title_w = rest - ws_w - tab_w;
     let columns = Line::from(vec![
         Span::raw("      "),
-        header(&fit("Workspace", ws_w)),
         header(&fit("Tab", tab_w)),
+        header(&fit("Workspace", ws_w)),
         header(&fit("Title", title_w)),
     ]);
     let agents = app.visible_agents();
@@ -867,11 +867,8 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
                     format!("{} ", a.status.icon()),
                     Style::new().fg(a.status.color()),
                 ),
-                Span::styled(
-                    fit(&a.workspace, ws_w),
-                    Style::new().fg(palette::TEXT).bold(),
-                ),
-                Span::styled(fit(&a.tab, tab_w), Style::new().fg(palette::TEXT)),
+                Span::styled(fit(&a.tab, tab_w), Style::new().fg(palette::TEXT).bold()),
+                Span::styled(fit(&a.workspace, ws_w), Style::new().fg(palette::TEXT)),
                 Span::styled(fit(&a.title, title_w), Style::new().fg(palette::SUBTEXT)),
             ]))
         })
