@@ -25,9 +25,14 @@ in your notes.
   by urgency: blocked, done, working, idle. Same symbols and colors as
   the Herdr sidebar. The list refreshes every 2 seconds. Enter jumps to the agent.
 - **Todos** are every open Markdown checkbox (`- [ ] ...`) in the folders you configure.
-  A `#todo/<group>` tag puts it in a group; untagged ones go under `other`. Code blocks are
-  skipped. The bars show how many each group has. Todos you opened or crossed most recently
-  sit at the top.
+  Code blocks are skipped. They are grouped two levels deep, from where the note lives:
+  - the **area** (the bars, `h`/`l` to pick one) is the first word of the top folder, so
+    `Work/…` is `work`. A note directly in the scanned folder uses its `#todo/<area>` tag,
+    else `other`.
+  - the **topic** (a `▸` header in the list) is the folder or note one level down:
+    `Work/Launch/plan.md` is topic `Launch`. A `TODO.md` right in an area folder is `inbox`.
+- The topic you used most recently comes first, then the biggest. Inside a topic the todo you
+  opened or crossed most recently leads.
 - **Enter on a todo** opens a new tab running `claude "<todo>"` and remembers the link (`↗`).
   Enter again goes back to that tab instead of starting another; if the tab was closed, a
   new one opens.

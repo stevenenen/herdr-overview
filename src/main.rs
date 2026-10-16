@@ -82,6 +82,8 @@ struct Agent {
 #[derive(Debug, PartialEq)]
 struct Todo {
     group: String,
+    /// The project it belongs to: the folder or note one level below the area folder.
+    topic: String,
     text: String,
 }
 
@@ -222,7 +224,11 @@ fn parse_todo(line: &str) -> Option<Todo> {
         }
     }
     let text = words.join(" ").replace("**", "");
-    (!text.is_empty()).then_some(Todo { group, text })
+    (!text.is_empty()).then_some(Todo {
+        group,
+        topic: String::new(),
+        text,
+    })
 }
 
 /// Open todos in a Markdown file, skipping examples inside fenced code blocks.
@@ -239,7 +245,25 @@ fn parse_file(text: &str) -> Vec<Todo> {
         .collect()
 }
 
-fn scan(dir: &Path, todos: &mut Vec<Todo>) {
+/// Area and topic from a note's path below the scanned folder. The area is the first word of
+/// the top folder (`Houses/…` → `houses`); the topic is the next folder, or the note itself.
+/// A `#todo/<tag>` only names the area for notes that sit directly in the scanned folder.
+fn place(relative: &Path, tag: &str) -> (String, String) {
+    let parts: Vec<String> = relative
+        .with_extension("")
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let first_word = |s: &str| s.split_whitespace().next().unwrap_or(s).to_lowercase();
+    match parts.as_slice() {
+        [note] => (tag.to_string(), note.clone()),
+        [area, note] if note.eq_ignore_ascii_case("todo") => (first_word(area), "inbox".into()),
+        [area, topic, ..] => (first_word(area), topic.clone()),
+        [] => (tag.to_string(), String::new()),
+    }
+}
+
+fn scan(root: &Path, dir: &Path, todos: &mut Vec<Todo>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -249,11 +273,15 @@ fn scan(dir: &Path, todos: &mut Vec<Todo>) {
             continue;
         }
         if path.is_dir() {
-            scan(&path, todos);
+            scan(root, &path, todos);
         } else if path.extension().is_some_and(|e| e == "md")
             && let Ok(text) = fs::read_to_string(&path)
         {
-            todos.extend(parse_file(&text));
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            todos.extend(parse_file(&text).into_iter().map(|mut t| {
+                (t.group, t.topic) = place(relative, &t.group);
+                t
+            }));
         }
     }
 }
@@ -430,6 +458,8 @@ struct App {
     focus: Focus,
     agent_list: ListState,
     todo_list: ListState,
+    /// Scroll position of the todo list, which also holds topic header rows.
+    todo_offset: usize,
     configured: bool,
     memory: Memory,
     /// Per-panel `/` filters, and whether keys are typing into the focused one.
@@ -446,7 +476,7 @@ impl App {
         let dirs = todo_dirs(&config);
         let mut todos = Vec::new();
         for dir in &dirs {
-            scan(dir, &mut todos);
+            scan(dir, dir, &mut todos);
         }
         let mut app = App {
             agents: load_agents(),
@@ -456,6 +486,7 @@ impl App {
             focus: Focus::Agents,
             agent_list: ListState::default().with_selected(Some(0)),
             todo_list: ListState::default().with_selected(Some(0)),
+            todo_offset: 0,
             configured: !dirs.is_empty(),
             memory: Memory::load(),
             agent_filter: String::new(),
@@ -484,16 +515,31 @@ impl App {
             .collect()
     }
 
-    /// Most recently opened or crossed first; the rest keep their order in the notes.
+    /// Grouped by topic. The topic used most recently comes first, then the biggest; inside a
+    /// topic the most recently opened or crossed todo leads and the rest keep their note order.
     fn visible_todos(&self) -> Vec<&Todo> {
-        let mut list: Vec<&Todo> = self
+        let used = |t: &Todo| self.memory.used.get(&t.text).copied().unwrap_or(0);
+        let list: Vec<&Todo> = self
             .todos
             .iter()
             .filter(|t| self.group == 0 || t.group == self.groups[self.group - 1].0)
-            .filter(|t| matches(&self.todo_filter, &[&t.text, &t.group]))
+            .filter(|t| matches(&self.todo_filter, &[&t.text, &t.group, &t.topic]))
             .collect();
+        let mut topics: HashMap<(&str, &str), (u64, usize)> = HashMap::new();
+        for t in &list {
+            let e = topics.entry((&t.group, &t.topic)).or_default();
+            e.0 = e.0.max(used(t));
+            e.1 += 1;
+        }
+        let mut list = list;
         list.sort_by_key(|t| {
-            std::cmp::Reverse(self.memory.used.get(&t.text).copied().unwrap_or(0))
+            let (last, size) = topics[&(t.group.as_str(), t.topic.as_str())];
+            (
+                std::cmp::Reverse(last),
+                std::cmp::Reverse(size),
+                (t.group.clone(), t.topic.clone()),
+                std::cmp::Reverse(used(t)),
+            )
         });
         list
     }
@@ -643,6 +689,7 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
                 if let Some(todo) = app.selected_todo() {
                     let todo = Todo {
                         group: todo.group.clone(),
+                        topic: todo.topic.clone(),
                         text: todo.text.clone(),
                     };
                     open_todo(&mut app.memory, &todo);
@@ -956,19 +1003,30 @@ fn draw_todos(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Fill(1),
     ])
     .areas(list_part);
-    let text_w = (area.width as usize).saturating_sub(8 + name_w + 1);
+    let text_w = (area.width as usize).saturating_sub(8);
     f.render_widget(
-        Line::from(vec![
-            Span::raw("        "),
-            header(&fit("Todo", text_w)),
-            header(&fit("Group", name_w)),
-        ]),
+        Line::from(vec![Span::raw("        "), header(&fit("Todo", text_w))]),
         head,
     );
-    let items: Vec<ListItem> = todos
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut selected_row = 0;
+    for (i, t) in todos.iter().enumerate() {
+        if i == 0 || (&t.group, &t.topic) != (&todos[i - 1].group, &todos[i - 1].topic) {
+            let n = todos[i..]
+                .iter()
+                .take_while(|o| (&o.group, &o.topic) == (&t.group, &t.topic))
+                .count();
+            let color = app.color_of(&t.group);
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(format!(" ▸ {}", t.topic), Style::new().fg(color).bold()),
+                Span::styled(format!("  {}", t.group), Style::new().fg(color)),
+                Span::styled(format!("  {n}"), Style::new().fg(palette::SUBTEXT)),
+            ])));
+        }
+        if app.todo_list.selected() == Some(i) {
+            selected_row = items.len();
+        }
+        items.push({
             let color = app.color_of(&t.group);
             let crossed = app.memory.crossed.contains(&t.text);
             let (box_icon, text_style) = if crossed {
@@ -986,15 +1044,19 @@ fn draw_todos(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled(box_icon, Style::new().fg(color)),
                 Span::styled(link, Style::new().fg(palette::ACCENT)),
                 Span::styled(fit(&t.text, text_w), text_style),
-                Span::styled(fit(&t.group, name_w), Style::new().fg(color)),
             ]))
-        })
-        .collect();
+        });
+    }
     let mut list = List::new(items);
     if app.focus == Focus::Todos {
         list = list.highlight_style(Style::new().bg(palette::SELECTED));
     }
-    f.render_stateful_widget(list, list_area, &mut app.todo_list);
+    // Selection counts todos only; the list widget counts header rows too.
+    let mut state = ListState::default()
+        .with_offset(app.todo_offset)
+        .with_selected(Some(selected_row));
+    f.render_stateful_widget(list, list_area, &mut state);
+    app.todo_offset = state.offset();
 }
 
 const AGENT_KEYS: &[(&str, &str)] = &[
@@ -1064,6 +1126,7 @@ mod tests {
             parse_todo("  - [ ] **Book** the dentist #todo/home (2026-08-26)"),
             Some(Todo {
                 group: "home".into(),
+                topic: String::new(),
                 text: "Book the dentist (2026-08-26)".into()
             })
         );
@@ -1071,6 +1134,7 @@ mod tests {
             parse_todo("* [ ] Untagged task"),
             Some(Todo {
                 group: "other".into(),
+                topic: String::new(),
                 text: "Untagged task".into()
             })
         );
@@ -1117,6 +1181,7 @@ mod tests {
     fn todos_sort_most_recently_used_first() {
         let todo = |t: &str| Todo {
             group: "g".into(),
+            topic: "x".into(),
             text: t.into(),
         };
         let mut app = App {
@@ -1127,6 +1192,7 @@ mod tests {
             focus: Focus::Todos,
             agent_list: ListState::default(),
             todo_list: ListState::default(),
+            todo_offset: 0,
             configured: true,
             memory: Memory::default(),
             agent_filter: String::new(),
@@ -1140,6 +1206,54 @@ mod tests {
             .map(|t| t.text.as_str())
             .collect();
         assert_eq!(order, vec!["c", "b", "a"]);
+    }
+
+    #[test]
+    fn place_takes_area_from_top_folder_and_topic_from_the_next_level() {
+        let p = |s: &str, tag: &str| place(Path::new(s), tag);
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(
+            p("Houses/Main Street 1/deed/fixes.md", "home"),
+            pair("houses", "Main Street 1")
+        );
+        assert_eq!(p("Work/Onboarding.md", "other"), pair("work", "Onboarding"));
+        assert_eq!(p("Work/TODO.md", "work"), pair("work", "inbox"));
+        assert_eq!(p("Inbox.md", "home"), pair("home", "Inbox"));
+    }
+
+    #[test]
+    fn todos_group_by_topic_most_recent_topic_first() {
+        let todo = |topic: &str, t: &str| Todo {
+            group: "g".into(),
+            topic: topic.into(),
+            text: t.into(),
+        };
+        let mut app = App {
+            agents: vec![],
+            todos: vec![
+                todo("big", "a"),
+                todo("small", "b"),
+                todo("big", "c"),
+                todo("big", "d"),
+            ],
+            groups: vec![],
+            group: 0,
+            focus: Focus::Todos,
+            agent_list: ListState::default(),
+            todo_list: ListState::default(),
+            todo_offset: 0,
+            configured: true,
+            memory: Memory::default(),
+            agent_filter: String::new(),
+            todo_filter: String::new(),
+            typing: false,
+        };
+        let order = |app: &App| -> Vec<String> {
+            app.visible_todos().iter().map(|t| t.text.clone()).collect()
+        };
+        assert_eq!(order(&app), vec!["a", "c", "d", "b"]);
+        app.memory.used = HashMap::from([("b".into(), 1)]);
+        assert_eq!(order(&app), vec!["b", "a", "c", "d"]);
     }
 
     #[test]
@@ -1159,6 +1273,7 @@ mod tests {
             focus: Focus::Todos,
             agent_list: ListState::default(),
             todo_list: ListState::default(),
+            todo_offset: 0,
             configured: true,
             memory: Memory::default(),
             agent_filter: String::new(),
@@ -1184,6 +1299,7 @@ mod tests {
     fn groups_sort_biggest_first() {
         let todo = |g: &str| Todo {
             group: g.into(),
+            topic: String::new(),
             text: "x".into(),
         };
         let todos = [todo("b"), todo("a"), todo("a"), todo("c")];
