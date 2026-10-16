@@ -4,16 +4,19 @@ One popup for a [Herdr](https://herdr.dev) session: which agents need you, and e
 in your notes.
 
 ```
- × 1   ✓ 2   ◐ 3   ○ 5   ☐ 24
-┌ agents ──────────────────────┐┌ todo ─────────────────────────┐
-│× api › auth   Fix login test ││  all  24                      │
-│✓ web › docs   Update README  ││ work ▰▰▰▰▰▰▰▰▰▰▰▰▰▰ 14         │
-│✓ web › main   Claude Code    ││ home ▰▰▰▰▰▰▰ 7                 │
-│◐ api › main   Claude Code    ││other ▰▰ 3                     │
-│○ cli › main   Claude Code    ││                               │
-│                              ││☐ Renew the passport           │
-│                              ││☐ Review the release notes     │
-└──────────────────────────────┘└───────────────────────────────┘
+ Agents   × 1  ✓ 2  ◐ 1  ○ 2             │ Todo   ☐ 24
+─────────────────────────────────────────│─────────────────────────────────
+      Workspace   Tab       Title        │   all    24
+ 1. × api         auth      Fix login t… │   work  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰ 14
+ 2. ✓ web         docs      Update READ… │   home  ▰▰▰▰▰▰▰ 7
+ 3. ✓ web         main      Claude Code  │   other ▰▰ 3
+ 4. ◐ api         main      Claude Code  │
+ 5. ○ cli         main      Claude Code  │        Todo                Group
+ 6. ○ cli         release   Claude Code  │ 1. ☐ ↗ Renew the passport  home
+                                         │ 2. ☒   Review the notes    work
+─────────────────────────────────────────│─────────────────────────────────
+  j/k ↑/↓ move  g/G top/bottom           │  j/k ↑/↓ move  h/l ←/→ group
+  Enter go to agent  Tab to todos  …     │  Enter Claude tab  Space cross out  …
 ```
 
 - **Agents** are sorted by urgency: blocked, done, working, idle. Same symbols and colors as
@@ -21,7 +24,14 @@ in your notes.
 - **Todos** are every open Markdown checkbox (`- [ ] ...`) in the folders you configure.
   A `#todo/<group>` tag puts it in a group; untagged ones go under `other`. Code blocks are
   skipped. The bars show how many each group has.
-- On a narrow client, such as Herdr on a phone, the two panels stack.
+- **Enter on a todo** opens a new tab running `claude "<todo>"` and remembers the link (`↗`).
+  Enter again goes back to that tab instead of starting another; if the tab was closed, a
+  new one opens.
+- **Space** crosses a todo out (`☒`), Space again undoes it. This only marks it in the
+  overview; your notes are never written to.
+- Links and cross-outs live in the plugin's state directory (`$HERDR_PLUGIN_STATE_DIR`).
+- Each panel's footer lists every key it takes. On a narrow client, such as Herdr on a phone,
+  the two panels stack.
 
 ## Install
 
@@ -31,12 +41,18 @@ herdr plugin install stevenenen/herdr-overview
 
 Needs Rust (`cargo`); Herdr builds the plugin on install.
 
-Point it at your notes in `$(herdr plugin config-dir stevenenen.herdr-overview)/config.toml`:
+Then tell it where your todos live. It has no default, so until you do, the Todo panel
+shows where to put the setting. Create `config.toml` in the plugin's config directory:
 
-```toml
+```sh
+cat > "$(herdr plugin config-dir stevenenen.herdr-overview)/config.toml" <<'TOML'
 [todos]
-dirs = ["~/notes"]
+dirs = ["~/notes"]          # any folders of Markdown files, scanned recursively
+TOML
 ```
+
+Any notes app that stores plain Markdown works: an Obsidian vault, a Logseq graph, a folder
+of `.md` files.
 
 Bind a key in `~/.config/herdr/config.toml`:
 
@@ -52,11 +68,14 @@ description = "Overview: agents and todos"
 
 | Key | Action |
 | --- | --- |
-| `j` / `k`, arrows | Move |
+| `j` / `k`, `↑` / `↓` | Move |
+| `g` / `G`, `Home` / `End` | Top / bottom |
 | `Tab` | Switch between agents and todos |
-| `h` / `l` | Previous / next todo group |
-| `Enter` | Jump to the selected agent |
-| `r` | Reload todos |
+| `h` / `l`, `←` / `→` | Previous / next todo group |
+| `Enter` on an agent | Jump to it |
+| `Enter` on a todo | Open or return to its Claude tab |
+| `Space` on a todo | Cross out / undo |
+| `r` | Reload |
 | `q` / `Esc` | Close |
 
 ## Development

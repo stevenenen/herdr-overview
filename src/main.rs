@@ -12,11 +12,12 @@ use ratatui::{
     DefaultTerminal, Frame,
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 use serde_json::Value;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Ordered by urgency: what needs you first.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -60,11 +61,11 @@ impl Status {
 
     fn color(self) -> Color {
         match self {
-            Status::Blocked => Color::Red,
-            Status::Done => Color::Cyan,
-            Status::Working => Color::Yellow,
-            Status::Idle => Color::Green,
-            Status::Unknown => Color::DarkGray,
+            Status::Blocked => palette::RED,
+            Status::Done => palette::TEAL,
+            Status::Working => palette::YELLOW,
+            Status::Idle => palette::GREEN,
+            Status::Unknown => palette::SUBTEXT,
         }
     }
 }
@@ -72,7 +73,8 @@ impl Status {
 #[derive(Debug)]
 struct Agent {
     status: Status,
-    place: String,
+    workspace: String,
+    tab: String,
     title: String,
     pane_id: String,
 }
@@ -83,15 +85,13 @@ struct Todo {
     text: String,
 }
 
-const GROUP_COLORS: [Color; 8] = [
-    Color::Magenta,
-    Color::Blue,
-    Color::Cyan,
-    Color::Green,
-    Color::Yellow,
-    Color::Red,
-    Color::LightMagenta,
-    Color::LightBlue,
+const GROUP_COLORS: [Color; 6] = [
+    palette::MAUVE,
+    palette::ACCENT,
+    palette::PEACH,
+    palette::GREEN,
+    palette::TEAL,
+    palette::YELLOW,
 ];
 
 fn herdr_bin() -> String {
@@ -134,20 +134,18 @@ fn parse_agents(
         .flatten()
         .map(|a| {
             let s = |k: &str| a[k].as_str().unwrap_or_default().to_string();
-            let ws = workspaces
-                .get(&s("workspace_id"))
-                .cloned()
-                .unwrap_or_default();
-            let tab = tabs.get(&s("tab_id")).cloned().unwrap_or_default();
+            let label =
+                |map: &HashMap<String, String>, k| map.get(&s(k)).cloned().unwrap_or_default();
             Agent {
                 status: Status::parse(&s("agent_status")),
-                place: format!("{ws} › {tab}"),
+                workspace: label(workspaces, "workspace_id"),
+                tab: label(tabs, "tab_id"),
                 title: s("terminal_title_stripped"),
                 pane_id: s("pane_id"),
             }
         })
         .collect();
-    list.sort_by(|a, b| (a.status, &a.place).cmp(&(b.status, &b.place)));
+    list.sort_by(|a, b| (a.status, &a.workspace, &a.tab).cmp(&(b.status, &b.workspace, &b.tab)));
     list
 }
 
@@ -234,6 +232,96 @@ fn todo_dirs(config: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// What the overview remembers per todo: its Claude tab and whether it is crossed out.
+/// Keyed by the todo text, stored in `$HERDR_PLUGIN_STATE_DIR/state.json`.
+#[derive(Default)]
+struct Memory {
+    tabs: HashMap<String, String>,
+    crossed: Vec<String>,
+}
+
+impl Memory {
+    fn path() -> Option<PathBuf> {
+        std::env::var("HERDR_PLUGIN_STATE_DIR")
+            .ok()
+            .map(|d| PathBuf::from(d).join("state.json"))
+    }
+
+    fn from_json(v: &Value) -> Self {
+        let tabs = v["tabs"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+            .collect();
+        let crossed = v["crossed"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| Some(v.as_str()?.to_string()))
+            .collect();
+        Memory { tabs, crossed }
+    }
+
+    fn load() -> Self {
+        Self::path()
+            .and_then(|p| fs::read(p).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .map(|v| Self::from_json(&v))
+            .unwrap_or_default()
+    }
+
+    fn save(&self) {
+        if let Some(p) = Self::path() {
+            let v = serde_json::json!({ "tabs": self.tabs, "crossed": self.crossed });
+            let _ = fs::write(p, v.to_string());
+        }
+    }
+
+    fn toggle_crossed(&mut self, text: &str) {
+        match self.crossed.iter().position(|t| t == text) {
+            Some(i) => {
+                self.crossed.remove(i);
+            }
+            None => self.crossed.push(text.to_string()),
+        }
+    }
+}
+
+/// `pane run` types into the shell, so the todo goes in single quotes.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// Focuses the todo's Claude tab, or opens one when it has none (or it was closed).
+fn open_todo(memory: &mut Memory, todo: &Todo) {
+    if let Some(tab) = memory.tabs.get(&todo.text)
+        && herdr(&["tab", "focus", tab]).is_some()
+    {
+        return;
+    }
+    let label: String = todo.text.chars().take(30).collect();
+    let Some(created) = herdr(&["tab", "create", "--label", &label, "--focus"]) else {
+        return;
+    };
+    let (Some(tab), Some(pane)) = (
+        created["tab"]["tab_id"].as_str(),
+        created["root_pane"]["pane_id"].as_str(),
+    ) else {
+        return;
+    };
+    let _ = Command::new(herdr_bin())
+        .args([
+            "pane",
+            "run",
+            pane,
+            &format!("claude {}", shell_quote(&todo.text)),
+        ])
+        .output();
+    memory.tabs.insert(todo.text.clone(), tab.to_string());
+    memory.save();
+}
+
 /// Groups with their counts, biggest first.
 fn groups(todos: &[Todo]) -> Vec<(String, usize)> {
     let mut counts: HashMap<&str, usize> = HashMap::new();
@@ -264,6 +352,7 @@ struct App {
     agent_list: ListState,
     todo_list: ListState,
     configured: bool,
+    memory: Memory,
 }
 
 impl App {
@@ -285,6 +374,7 @@ impl App {
             agent_list: ListState::default().with_selected(Some(0)),
             todo_list: ListState::default().with_selected(Some(0)),
             configured: !dirs.is_empty(),
+            memory: Memory::load(),
         };
         if app.agents.is_empty() {
             app.focus = Focus::Todos;
@@ -324,6 +414,11 @@ impl App {
             let i = state.selected().unwrap_or(0) as isize + delta;
             state.select(Some(i.clamp(0, len as isize - 1) as usize));
         }
+    }
+
+    fn selected_todo(&self) -> Option<&Todo> {
+        let i = self.todo_list.selected()?;
+        self.visible_todos().get(i).copied()
     }
 
     fn cycle_group(&mut self, delta: isize) {
@@ -372,10 +467,28 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
             KeyCode::Char('l') | KeyCode::Right => app.cycle_group(1),
             KeyCode::Char('h') | KeyCode::Left => app.cycle_group(-1),
             KeyCode::Char('r') => app = App::load(),
+            KeyCode::Char('g') | KeyCode::Home => app.step(isize::MIN / 2),
+            KeyCode::Char('G') | KeyCode::End => app.step(isize::MAX / 2),
             KeyCode::Enter if app.focus == Focus::Agents => {
                 if let Some(a) = app.agent_list.selected().and_then(|i| app.agents.get(i)) {
                     herdr(&["agent", "focus", &a.pane_id]);
                     return Ok(());
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(todo) = app.selected_todo() {
+                    let todo = Todo {
+                        group: todo.group.clone(),
+                        text: todo.text.clone(),
+                    };
+                    open_todo(&mut app.memory, &todo);
+                    return Ok(());
+                }
+            }
+            KeyCode::Char(' ') if app.focus == Focus::Todos => {
+                if let Some(text) = app.selected_todo().map(|t| t.text.clone()) {
+                    app.memory.toggle_crossed(&text);
+                    app.memory.save();
                 }
             }
             _ => {}
@@ -383,103 +496,210 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
     }
 }
 
-fn panel(title: &str, focused: bool) -> Block<'_> {
-    let color = if focused {
-        Color::White
+/// Tokyo Night, the same dark palette Herdr Recent Navigator uses.
+// ponytail: dark palette only; read Herdr's theme here if a light one is needed.
+mod palette {
+    use ratatui::style::Color;
+    pub const BG: Color = Color::Rgb(26, 27, 38);
+    pub const LINE: Color = Color::Rgb(36, 40, 59);
+    pub const SELECTED: Color = Color::Rgb(65, 72, 104);
+    pub const TEXT: Color = Color::Rgb(192, 202, 245);
+    pub const SUBTEXT: Color = Color::Rgb(169, 177, 214);
+    pub const ACCENT: Color = Color::Rgb(122, 162, 247);
+    pub const RED: Color = Color::Rgb(247, 118, 142);
+    pub const YELLOW: Color = Color::Rgb(224, 175, 104);
+    pub const GREEN: Color = Color::Rgb(158, 206, 106);
+    pub const TEAL: Color = Color::Rgb(125, 207, 255);
+    pub const MAUVE: Color = Color::Rgb(187, 154, 247);
+    pub const PEACH: Color = Color::Rgb(255, 158, 100);
+}
+
+/// Truncates to `width` columns with an ellipsis, then pads to exactly `width`.
+fn fit(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return format!(
+            "{text:<width$}",
+            width = width - text.width() + text.chars().count()
+        );
+    }
+    let mut out = String::new();
+    for c in text.chars() {
+        if out.width() + c.width().unwrap_or(0) + 1 > width {
+            break;
+        }
+        out.push(c);
+    }
+    out.push('…');
+    let pad = width.saturating_sub(out.width());
+    out + &" ".repeat(pad)
+}
+
+/// A section title like a Recent Navigator tab: filled when focused.
+fn title(text: &str, focused: bool) -> Span<'static> {
+    let style = if focused {
+        Style::new().fg(palette::BG).bg(palette::ACCENT).bold()
     } else {
-        Color::DarkGray
+        Style::new().fg(palette::ACCENT)
     };
-    Block::bordered()
-        .title(format!(" {title} "))
-        .border_style(Style::new().fg(color))
+    Span::styled(format!(" {text} "), style)
+}
+
+fn header(text: &str) -> Span<'static> {
+    Span::styled(text.to_string(), Style::new().fg(palette::SUBTEXT).bold())
 }
 
 fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
-    let [header, body] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    f.render_widget(
+        Block::new().style(Style::new().bg(palette::BG).fg(palette::TEXT)),
+        area,
+    );
+    let body = area;
 
-    let mut spans = vec![Span::raw(" ")];
+    // A phone-width client stacks the sections instead of splitting them.
+    let [left, right] = if area.width < 80 {
+        let h = (app.agents.len() as u16 + 4).min(body.height / 2);
+        Layout::vertical([Constraint::Length(h), Constraint::Fill(1)]).areas(body)
+    } else {
+        let [l, divider, r] = Layout::horizontal([
+            Constraint::Percentage(50),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .areas(body);
+        f.render_widget(
+            Block::new()
+                .borders(Borders::LEFT)
+                .border_style(Style::new().fg(palette::LINE)),
+            divider,
+        );
+        [l, r]
+    };
+    let [left, left_keys] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(hint_lines(AGENT_KEYS, left.width).len() as u16 + 1),
+    ])
+    .areas(left);
+    let [right, right_keys] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(hint_lines(TODO_KEYS, right.width).len() as u16 + 1),
+    ])
+    .areas(right);
+    draw_agents(f, app, left);
+    draw_todos(f, app, right);
+    draw_hints(f, left_keys, AGENT_KEYS);
+    draw_hints(f, right_keys, TODO_KEYS);
+}
+
+/// Title strip plus a column header, as in Recent Navigator. Returns the list area.
+fn section(f: &mut Frame, area: Rect, top: Line, columns: Line) -> Rect {
+    let [strip, head, list] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    f.render_widget(
+        Paragraph::new(top).block(
+            Block::new()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::new().fg(palette::LINE)),
+        ),
+        strip,
+    );
+    f.render_widget(Paragraph::new(columns), head);
+    list
+}
+
+fn number(i: usize) -> Span<'static> {
+    Span::styled(format!("{:>2}. ", i + 1), Style::new().fg(palette::SUBTEXT))
+}
+
+fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
+    let mut top = vec![title("Agents", app.focus == Focus::Agents), Span::raw("  ")];
     for status in Status::ALL {
         let n = app.agents.iter().filter(|a| a.status == status).count();
         if n > 0 {
-            spans.push(Span::styled(
-                format!("{} {n}   ", status.icon()),
+            top.push(Span::styled(
+                format!("{} {n}  ", status.icon()),
                 Style::new().fg(status.color()).bold(),
             ));
         }
     }
-    spans.push(Span::styled(
-        format!("☐ {}", app.todos.len()),
-        Style::new().bold(),
-    ));
-    f.render_widget(Line::from(spans), header);
+    // Index, icon, then workspace, tab and title columns.
+    let rest = (area.width as usize).saturating_sub(6);
+    let (ws_w, tab_w) = (rest * 3 / 10, rest * 3 / 10);
+    let title_w = rest - ws_w - tab_w;
+    let columns = Line::from(vec![
+        Span::raw("      "),
+        header(&fit("Workspace", ws_w)),
+        header(&fit("Tab", tab_w)),
+        header(&fit("Title", title_w)),
+    ]);
+    let list_area = section(f, area, Line::from(top), columns);
 
-    // A phone-width client stacks the panels instead of splitting them.
-    let [left, right] = if area.width < 80 {
-        let h = (app.agents.len() as u16 + 2).min(body.height / 2);
-        Layout::vertical([Constraint::Length(h), Constraint::Fill(1)]).areas(body)
-    } else {
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Fill(1)]).areas(body)
-    };
-    draw_agents(f, app, left);
-    draw_todos(f, app, right);
-}
-
-fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = app
         .agents
         .iter()
-        .map(|a| {
+        .enumerate()
+        .map(|(i, a)| {
             ListItem::new(Line::from(vec![
+                number(i),
                 Span::styled(
                     format!("{} ", a.status.icon()),
                     Style::new().fg(a.status.color()),
                 ),
-                Span::raw(a.place.clone()).bold(),
-                Span::raw(format!("  {}", a.title)).dark_gray(),
+                Span::styled(
+                    fit(&a.workspace, ws_w),
+                    Style::new().fg(palette::TEXT).bold(),
+                ),
+                Span::styled(fit(&a.tab, tab_w), Style::new().fg(palette::TEXT)),
+                Span::styled(fit(&a.title, title_w), Style::new().fg(palette::SUBTEXT)),
             ]))
         })
         .collect();
-    let list = List::new(items)
-        .block(panel("agents", app.focus == Focus::Agents))
-        .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
-    f.render_stateful_widget(list, area, &mut app.agent_list);
+    let mut list = List::new(items);
+    if app.focus == Focus::Agents {
+        list = list.highlight_style(Style::new().bg(palette::SELECTED));
+    }
+    f.render_stateful_widget(list, list_area, &mut app.agent_list);
 }
 
 fn draw_todos(f: &mut Frame, app: &mut App, area: Rect) {
-    let block = panel("todo", app.focus == Focus::Todos);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
+    let top = Line::from(vec![
+        title("Todo", app.focus == Focus::Todos),
+        Span::styled(
+            format!("  ☐ {}", app.todos.len()),
+            Style::new().fg(palette::TEXT).bold(),
+        ),
+    ]);
     if !app.configured {
+        let list_area = section(f, area, top, Line::default());
         let hint = format!(
-            "set [todos] dirs in {}",
+            "  set [todos] dirs in {}",
             config_path()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default()
         );
-        f.render_widget(Paragraph::new(hint).dark_gray(), inner);
+        f.render_widget(Paragraph::new(hint).fg(palette::SUBTEXT), list_area);
         return;
     }
 
-    let bars_height = (app.groups.len() as u16 + 1).min(inner.height / 3);
-    let [bars, _, items] = Layout::vertical([
-        Constraint::Length(bars_height),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-    ])
-    .areas(inner);
-
-    let max = app.groups.first().map(|g| g.1).unwrap_or(1).max(1);
-    let name_width = app
+    // One bar per group, the selected group filled like a tab.
+    let name_w = app
         .groups
         .iter()
-        .map(|g| g.0.len())
+        .map(|g| g.0.width())
         .max()
         .unwrap_or(3)
         .max(3);
-    let bar_width = (bars.width as usize).saturating_sub(name_width + 8).max(1);
-    let all = std::iter::once(("all".to_string(), app.todos.len(), Color::White));
+    let bars_h = (app.groups.len() as u16 + 1).min(area.height / 3);
+    let [bars, list_part] =
+        Layout::vertical([Constraint::Length(bars_h + 3), Constraint::Fill(1)]).areas(area);
+    let bars_area = section(f, bars, top, Line::default());
+    let max = app.groups.first().map(|g| g.1).unwrap_or(1).max(1);
+    let bar_w = (area.width as usize).saturating_sub(name_w + 10).max(1);
+    let all = std::iter::once(("all".to_string(), app.todos.len(), palette::TEXT));
     let rows: Vec<Line> = all
         .chain(
             app.groups
@@ -488,40 +708,123 @@ fn draw_todos(f: &mut Frame, app: &mut App, area: Rect) {
         )
         .enumerate()
         .map(|(i, (name, n, color))| {
-            let len = if i == 0 {
-                0
+            let len = if i == 0 { 0 } else { (n * bar_w).div_ceil(max) };
+            let selected = i == app.group;
+            let name_style = if selected {
+                Style::new().fg(palette::BG).bg(color).bold()
             } else {
-                (n * bar_width).div_ceil(max)
+                Style::new().fg(color)
             };
-            let mut line = Line::from(vec![
-                Span::raw(format!("{name:>name_width$} ")),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format!(" {name:<name_w$} "), name_style),
+                Span::raw(" "),
                 Span::styled("▰".repeat(len), Style::new().fg(color)),
-                Span::raw(format!(" {n}")).dark_gray(),
-            ]);
-            if i == app.group {
-                line = line.add_modifier(Modifier::REVERSED);
-            }
-            line
+                Span::styled(format!(" {n}"), Style::new().fg(palette::TEXT)),
+            ])
         })
         .collect();
-    let skip = app.group.saturating_sub(bars_height as usize - 1);
-    f.render_widget(Paragraph::new(rows).scroll((skip as u16, 0)), bars);
+    let skip = app.group.saturating_sub(bars_area.height as usize - 1);
+    f.render_widget(Paragraph::new(rows).scroll((skip as u16, 0)), bars_area);
 
-    let list_items: Vec<ListItem> = app
+    let [_, head, list_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(list_part);
+    let text_w = (area.width as usize).saturating_sub(8 + name_w + 1);
+    f.render_widget(
+        Line::from(vec![
+            Span::raw("        "),
+            header(&fit("Todo", text_w)),
+            header(&fit("Group", name_w)),
+        ]),
+        head,
+    );
+    let items: Vec<ListItem> = app
         .visible_todos()
         .iter()
-        .map(|t| {
+        .enumerate()
+        .map(|(i, t)| {
+            let color = app.color_of(&t.group);
+            let crossed = app.memory.crossed.contains(&t.text);
+            let (box_icon, text_style) = if crossed {
+                ("☒ ", Style::new().fg(palette::SUBTEXT).crossed_out())
+            } else {
+                ("☐ ", Style::new().fg(palette::TEXT))
+            };
+            let link = if app.memory.tabs.contains_key(&t.text) {
+                "↗ "
+            } else {
+                "  "
+            };
             ListItem::new(Line::from(vec![
-                Span::styled("☐ ", Style::new().fg(app.color_of(&t.group))),
-                Span::raw(t.text.clone()),
+                number(i),
+                Span::styled(box_icon, Style::new().fg(color)),
+                Span::styled(link, Style::new().fg(palette::ACCENT)),
+                Span::styled(fit(&t.text, text_w), text_style),
+                Span::styled(fit(&t.group, name_w), Style::new().fg(color)),
             ]))
         })
         .collect();
-    let mut list = List::new(list_items);
+    let mut list = List::new(items);
     if app.focus == Focus::Todos {
-        list = list.highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+        list = list.highlight_style(Style::new().bg(palette::SELECTED));
     }
-    f.render_stateful_widget(list, items, &mut app.todo_list);
+    f.render_stateful_widget(list, list_area, &mut app.todo_list);
+}
+
+const AGENT_KEYS: &[(&str, &str)] = &[
+    ("j/k ↑/↓", "move"),
+    ("g/G", "top/bottom"),
+    ("Enter", "go to agent"),
+    ("Tab", "to todos"),
+    ("r", "reload"),
+    ("Esc/q", "close"),
+];
+
+const TODO_KEYS: &[(&str, &str)] = &[
+    ("j/k ↑/↓", "move"),
+    ("g/G", "top/bottom"),
+    ("h/l ←/→", "group"),
+    ("Enter", "Claude tab"),
+    ("Space", "cross out"),
+    ("Tab", "to agents"),
+    ("r", "reload"),
+    ("Esc/q", "close"),
+];
+
+/// Every key the panel takes, wrapped over as many lines as `width` needs.
+fn hint_lines(keys: &[(&'static str, &'static str)], width: u16) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::default()];
+    let mut used = 0;
+    for (key, label) in keys {
+        let w = key.width() + label.width() + 3;
+        if used + w > width as usize && used > 0 {
+            lines.push(Line::default());
+            used = 0;
+        }
+        let line = lines.last_mut().unwrap();
+        line.push_span(Span::raw("  "));
+        line.push_span(Span::styled(*key, Style::new().fg(palette::ACCENT)));
+        line.push_span(Span::raw(" "));
+        line.push_span(Span::styled(*label, Style::new().fg(palette::SUBTEXT)));
+        used += w;
+    }
+    lines
+}
+
+fn draw_hints(f: &mut Frame, area: Rect, keys: &[(&'static str, &'static str)]) {
+    let lines = hint_lines(keys, area.width);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::new()
+                .borders(Borders::TOP)
+                .border_style(Style::new().fg(palette::LINE)),
+        ),
+        area,
+    );
 }
 
 #[cfg(test)]
@@ -555,6 +858,27 @@ mod tests {
         let text = "- [ ] Real\n```markdown\n- [ ] Example #todo/<section>\n```\n- [ ] Also real";
         let texts: Vec<_> = parse_file(text).into_iter().map(|t| t.text).collect();
         assert_eq!(texts, vec!["Real", "Also real"]);
+    }
+
+    #[test]
+    fn memory_round_trips_and_toggles_crossed() {
+        let mut m = Memory::from_json(&json!({"tabs": {"Book it": "w1:t2"}, "crossed": ["Done"]}));
+        assert_eq!(m.tabs.get("Book it").map(String::as_str), Some("w1:t2"));
+        m.toggle_crossed("Done");
+        m.toggle_crossed("New");
+        assert_eq!(m.crossed, vec!["New"]);
+    }
+
+    #[test]
+    fn shell_quote_keeps_quotes_and_dollars_literal() {
+        assert_eq!(shell_quote("it's $HOME"), r"'it'\''s $HOME'");
+    }
+
+    #[test]
+    fn fit_truncates_and_pads_by_display_width() {
+        assert_eq!(fit("abc", 5), "abc  ");
+        assert_eq!(fit("abcdef", 4), "abc…");
+        assert_eq!(fit("日本語", 4), "日… ");
     }
 
     #[test]
@@ -597,14 +921,20 @@ mod tests {
         let list = parse_agents(&agents, &workspaces, &tabs);
         let order: Vec<_> = list
             .iter()
-            .map(|a| (a.status, a.place.as_str(), a.pane_id.as_str()))
+            .map(|a| {
+                (
+                    a.status,
+                    format!("{} › {}", a.workspace, a.tab),
+                    a.pane_id.as_str(),
+                )
+            })
             .collect();
         assert_eq!(
             order,
             vec![
-                (Status::Blocked, "api › fix", "p2"),
-                (Status::Done, "web › docs", "p3"),
-                (Status::Idle, "api › main", "p1"),
+                (Status::Blocked, "api › fix".to_string(), "p2"),
+                (Status::Done, "web › docs".to_string(), "p3"),
+                (Status::Idle, "api › main".to_string(), "p1"),
             ]
         );
     }
