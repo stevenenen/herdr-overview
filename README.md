@@ -6,6 +6,8 @@ in your notes.
 ```
  Agents   × 1  ✓ 2  ◐ 1  ○ 2             │ Todo   ☐ 24
 ─────────────────────────────────────────│─────────────────────────────────
+ > / to filter                        6  │ > pass▏                     1/24
+─────────────────────────────────────────│─────────────────────────────────
       Workspace   Tab       Title        │   all    24
  1. × api         auth      Fix login t… │   work  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰ 14
  2. ✓ web         docs      Update READ… │   home  ▰▰▰▰▰▰▰ 7
@@ -30,6 +32,8 @@ in your notes.
 - **Space** crosses a todo out (`☒`), Space again undoes it. This only marks it in the
   overview; your notes are never written to.
 - Links and cross-outs live in the plugin's state directory (`$HERDR_PLUGIN_STATE_DIR`).
+- **`/`** filters the panel you are in, like Herdr Recent Navigator: type to narrow the list
+  (every word must match), Esc stops typing and keeps the filter, Esc again clears it.
 - Each panel's footer lists every key it takes. On a narrow client, such as Herdr on a phone,
   the two panels stack.
 
@@ -68,6 +72,7 @@ description = "Overview: agents and todos"
 
 | Key | Action |
 | --- | --- |
+| `/` | Filter this panel; typed keys go to the filter |
 | `j` / `k`, `↑` / `↓` | Move |
 | `g` / `G`, `Home` / `End` | Top / bottom |
 | `Tab` | Switch between agents and todos |
@@ -76,7 +81,8 @@ description = "Overview: agents and todos"
 | `Enter` on a todo | Open or return to its Claude tab |
 | `Space` on a todo | Cross out / undo |
 | `r` | Reload |
-| `q` / `Esc` | Close |
+| `Esc` | Stop typing, then clear the filter, then close |
+| `q` | Close |
 
 ## Development
 

@@ -323,6 +323,15 @@ fn open_todo(memory: &mut Memory, todo: &Todo) {
 }
 
 /// Groups with their counts, biggest first.
+/// Case-insensitive: every word of the filter appears in one of the fields.
+fn matches(filter: &str, fields: &[&str]) -> bool {
+    let haystack = fields.join(" ").to_lowercase();
+    filter
+        .to_lowercase()
+        .split_whitespace()
+        .all(|word| haystack.contains(word))
+}
+
 fn groups(todos: &[Todo]) -> Vec<(String, usize)> {
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for t in todos {
@@ -353,6 +362,10 @@ struct App {
     todo_list: ListState,
     configured: bool,
     memory: Memory,
+    /// Per-panel `/` filters, and whether keys are typing into the focused one.
+    agent_filter: String,
+    todo_filter: String,
+    typing: bool,
 }
 
 impl App {
@@ -375,6 +388,9 @@ impl App {
             todo_list: ListState::default().with_selected(Some(0)),
             configured: !dirs.is_empty(),
             memory: Memory::load(),
+            agent_filter: String::new(),
+            todo_filter: String::new(),
+            typing: false,
         };
         if app.agents.is_empty() {
             app.focus = Focus::Todos;
@@ -391,20 +407,54 @@ impl App {
         GROUP_COLORS[i % GROUP_COLORS.len()]
     }
 
+    fn visible_agents(&self) -> Vec<&Agent> {
+        self.agents
+            .iter()
+            .filter(|a| matches(&self.agent_filter, &[&a.workspace, &a.tab, &a.title]))
+            .collect()
+    }
+
     fn visible_todos(&self) -> Vec<&Todo> {
-        match self.group {
-            0 => self.todos.iter().collect(),
-            n => self
-                .todos
-                .iter()
-                .filter(|t| t.group == self.groups[n - 1].0)
-                .collect(),
+        self.todos
+            .iter()
+            .filter(|t| self.group == 0 || t.group == self.groups[self.group - 1].0)
+            .filter(|t| matches(&self.todo_filter, &[&t.text, &t.group]))
+            .collect()
+    }
+
+    fn filter_mut(&mut self) -> &mut String {
+        match self.focus {
+            Focus::Agents => &mut self.agent_filter,
+            Focus::Todos => &mut self.todo_filter,
         }
+    }
+
+    fn list_mut(&mut self) -> &mut ListState {
+        match self.focus {
+            Focus::Agents => &mut self.agent_list,
+            Focus::Todos => &mut self.todo_list,
+        }
+    }
+
+    /// Esc steps back one layer: stop typing, then clear the filter, then close.
+    fn back_out(&mut self) -> bool {
+        if self.typing {
+            self.typing = false;
+        } else if !self.filter_mut().is_empty() {
+            self.filter_mut().clear();
+            self.list_mut().select(Some(0));
+        } else {
+            return true;
+        }
+        false
     }
 
     fn step(&mut self, delta: isize) {
         let (state, len) = match self.focus {
-            Focus::Agents => (&mut self.agent_list, self.agents.len()),
+            Focus::Agents => {
+                let len = self.visible_agents().len();
+                (&mut self.agent_list, len)
+            }
             Focus::Todos => {
                 let len = self.visible_todos().len();
                 (&mut self.todo_list, len)
@@ -454,9 +504,32 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         if key.kind != KeyEventKind::Press {
             continue;
         }
+        // While typing a filter, printable keys go to it, so j/k/q can be searched.
+        if app.typing {
+            match key.code {
+                KeyCode::Char(c) => {
+                    app.filter_mut().push(c);
+                    app.list_mut().select(Some(0));
+                    continue;
+                }
+                KeyCode::Backspace => {
+                    app.filter_mut().pop();
+                    app.list_mut().select(Some(0));
+                    continue;
+                }
+                _ => {}
+            }
+        }
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+            KeyCode::Esc => {
+                if app.back_out() {
+                    return Ok(());
+                }
+            }
+            KeyCode::Char('q') => return Ok(()),
+            KeyCode::Char('/') => app.typing = true,
             KeyCode::Tab | KeyCode::BackTab => {
+                app.typing = false;
                 app.focus = match app.focus {
                     Focus::Agents => Focus::Todos,
                     Focus::Todos => Focus::Agents,
@@ -464,13 +537,25 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
             }
             KeyCode::Char('j') | KeyCode::Down => app.step(1),
             KeyCode::Char('k') | KeyCode::Up => app.step(-1),
-            KeyCode::Char('l') | KeyCode::Right => app.cycle_group(1),
-            KeyCode::Char('h') | KeyCode::Left => app.cycle_group(-1),
-            KeyCode::Char('r') => app = App::load(),
+            KeyCode::Char('l') | KeyCode::Right => {
+                app.typing = false;
+                app.cycle_group(1)
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                app.typing = false;
+                app.cycle_group(-1)
+            }
+            KeyCode::Char('r') => {
+                let (agent_filter, todo_filter) =
+                    (app.agent_filter.clone(), app.todo_filter.clone());
+                app = App::load();
+                (app.agent_filter, app.todo_filter) = (agent_filter, todo_filter);
+            }
             KeyCode::Char('g') | KeyCode::Home => app.step(isize::MIN / 2),
             KeyCode::Char('G') | KeyCode::End => app.step(isize::MAX / 2),
             KeyCode::Enter if app.focus == Focus::Agents => {
-                if let Some(a) = app.agent_list.selected().and_then(|i| app.agents.get(i)) {
+                let agents = app.visible_agents();
+                if let Some(a) = app.agent_list.selected().and_then(|i| agents.get(i)) {
                     herdr(&["agent", "focus", &a.pane_id]);
                     return Ok(());
                 }
@@ -592,13 +677,56 @@ fn draw(f: &mut Frame, app: &mut App) {
 }
 
 /// Title strip plus a column header, as in Recent Navigator. Returns the list area.
-fn section(f: &mut Frame, area: Rect, top: Line, columns: Line) -> Rect {
-    let [strip, head, list] = Layout::vertical([
+/// Recent Navigator's search line: ` > query` with the match count on the right.
+fn filter_line(
+    filter: &str,
+    typing: bool,
+    matched: usize,
+    total: usize,
+    width: u16,
+) -> Line<'static> {
+    let (text, style) = match (filter.is_empty(), typing) {
+        (true, false) => ("/ to filter".to_string(), Style::new().fg(palette::SUBTEXT)),
+        (true, true) => (String::new(), Style::new()),
+        (false, _) => (filter.to_string(), Style::new().fg(palette::TEXT)),
+    };
+    let prompt = if typing {
+        palette::ACCENT
+    } else {
+        palette::SUBTEXT
+    };
+    let count = if filter.is_empty() {
+        total.to_string()
+    } else {
+        format!("{matched}/{total}")
+    };
+    let cursor = if typing { "▏" } else { "" };
+    let pad = (width as usize).saturating_sub(3 + text.width() + cursor.width() + count.len() + 2);
+    Line::from(vec![
+        Span::styled(" > ", Style::new().fg(prompt)),
+        Span::styled(text, style),
+        Span::styled(cursor, Style::new().fg(palette::ACCENT)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(count, Style::new().fg(palette::SUBTEXT)),
+    ])
+}
+
+fn section(f: &mut Frame, area: Rect, top: Line, search: Line, columns: Line) -> Rect {
+    let [strip, search_area, head, list] = Layout::vertical([
+        Constraint::Length(2),
         Constraint::Length(2),
         Constraint::Length(1),
         Constraint::Fill(1),
     ])
     .areas(area);
+    f.render_widget(
+        Paragraph::new(search).block(
+            Block::new()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::new().fg(palette::LINE)),
+        ),
+        search_area,
+    );
     f.render_widget(
         Paragraph::new(top).block(
             Block::new()
@@ -636,10 +764,18 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
         header(&fit("Tab", tab_w)),
         header(&fit("Title", title_w)),
     ]);
-    let list_area = section(f, area, Line::from(top), columns);
+    let agents = app.visible_agents();
+    let typing = app.typing && app.focus == Focus::Agents;
+    let search = filter_line(
+        &app.agent_filter,
+        typing,
+        agents.len(),
+        app.agents.len(),
+        area.width,
+    );
+    let list_area = section(f, area, Line::from(top), search, columns);
 
-    let items: Vec<ListItem> = app
-        .agents
+    let items: Vec<ListItem> = agents
         .iter()
         .enumerate()
         .map(|(i, a)| {
@@ -674,7 +810,7 @@ fn draw_todos(f: &mut Frame, app: &mut App, area: Rect) {
         ),
     ]);
     if !app.configured {
-        let list_area = section(f, area, top, Line::default());
+        let list_area = section(f, area, top, Line::default(), Line::default());
         let hint = format!(
             "  set [todos] dirs in {}",
             config_path()
@@ -695,8 +831,17 @@ fn draw_todos(f: &mut Frame, app: &mut App, area: Rect) {
         .max(3);
     let bars_h = (app.groups.len() as u16 + 1).min(area.height / 3);
     let [bars, list_part] =
-        Layout::vertical([Constraint::Length(bars_h + 3), Constraint::Fill(1)]).areas(area);
-    let bars_area = section(f, bars, top, Line::default());
+        Layout::vertical([Constraint::Length(bars_h + 5), Constraint::Fill(1)]).areas(area);
+    let todos = app.visible_todos();
+    let typing = app.typing && app.focus == Focus::Todos;
+    let search = filter_line(
+        &app.todo_filter,
+        typing,
+        todos.len(),
+        app.todos.len(),
+        area.width,
+    );
+    let bars_area = section(f, bars, top, search, Line::default());
     let max = app.groups.first().map(|g| g.1).unwrap_or(1).max(1);
     let bar_w = (area.width as usize).saturating_sub(name_w + 10).max(1);
     let all = std::iter::once(("all".to_string(), app.todos.len(), palette::TEXT));
@@ -742,8 +887,7 @@ fn draw_todos(f: &mut Frame, app: &mut App, area: Rect) {
         ]),
         head,
     );
-    let items: Vec<ListItem> = app
-        .visible_todos()
+    let items: Vec<ListItem> = todos
         .iter()
         .enumerate()
         .map(|(i, t)| {
@@ -776,15 +920,18 @@ fn draw_todos(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 const AGENT_KEYS: &[(&str, &str)] = &[
+    ("/", "filter"),
     ("j/k ↑/↓", "move"),
     ("g/G", "top/bottom"),
     ("Enter", "go to agent"),
     ("Tab", "to todos"),
     ("r", "reload"),
-    ("Esc/q", "close"),
+    ("Esc", "back / close"),
+    ("q", "close"),
 ];
 
 const TODO_KEYS: &[(&str, &str)] = &[
+    ("/", "filter"),
     ("j/k ↑/↓", "move"),
     ("g/G", "top/bottom"),
     ("h/l ←/→", "group"),
@@ -792,7 +939,8 @@ const TODO_KEYS: &[(&str, &str)] = &[
     ("Space", "cross out"),
     ("Tab", "to agents"),
     ("r", "reload"),
-    ("Esc/q", "close"),
+    ("Esc", "back / close"),
+    ("q", "close"),
 ];
 
 /// Every key the panel takes, wrapped over as many lines as `width` needs.
@@ -872,6 +1020,37 @@ mod tests {
     #[test]
     fn shell_quote_keeps_quotes_and_dollars_literal() {
         assert_eq!(shell_quote("it's $HOME"), r"'it'\''s $HOME'");
+    }
+
+    #[test]
+    fn matches_every_word_case_insensitively_across_fields() {
+        assert!(matches("", &["anything"]));
+        assert!(matches("API fix", &["api", "fix login"]));
+        assert!(!matches("api deploy", &["api", "fix login"]));
+    }
+
+    #[test]
+    fn esc_stops_typing_then_clears_filter_then_closes() {
+        let mut app = App {
+            agents: vec![],
+            todos: vec![],
+            groups: vec![],
+            group: 0,
+            focus: Focus::Todos,
+            agent_list: ListState::default(),
+            todo_list: ListState::default(),
+            configured: true,
+            memory: Memory::default(),
+            agent_filter: String::new(),
+            todo_filter: "dentist".into(),
+            typing: true,
+        };
+        assert!(!app.back_out());
+        assert!(!app.typing);
+        assert_eq!(app.todo_filter, "dentist");
+        assert!(!app.back_out());
+        assert!(app.todo_filter.is_empty());
+        assert!(app.back_out());
     }
 
     #[test]
