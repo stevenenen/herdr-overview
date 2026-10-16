@@ -551,7 +551,6 @@ impl App {
         let n = self.groups.len() as isize + 1;
         self.group = (self.group as isize + delta).rem_euclid(n) as usize;
         self.todo_list.select(Some(0));
-        self.focus = Focus::Todos;
     }
 }
 
@@ -617,11 +616,11 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
             }
             KeyCode::Char('j') | KeyCode::Down => app.step(1),
             KeyCode::Char('k') | KeyCode::Up => app.step(-1),
-            KeyCode::Char('l') | KeyCode::Right => {
+            KeyCode::Char('l') | KeyCode::Right if app.focus == Focus::Todos => {
                 app.typing = false;
                 app.cycle_group(1)
             }
-            KeyCode::Char('h') | KeyCode::Left => {
+            KeyCode::Char('h') | KeyCode::Left if app.focus == Focus::Todos => {
                 app.typing = false;
                 app.cycle_group(-1)
             }
