@@ -1340,7 +1340,6 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
                     return Ok(());
                 }
             }
-            KeyCode::Char('q') => return Ok(()),
             KeyCode::Char('/') => app.typing = true,
             KeyCode::Char('u') if app.focus == Focus::Agents => {
                 app.link = Some(String::new());
@@ -1930,7 +1929,6 @@ const AGENT_KEYS: &[(&str, &str)] = &[
     ("Enter", "go to agent"),
     ("Tab", "to todos"),
     ("Esc", "back / close"),
-    ("q", "close"),
 ];
 
 const TODO_KEYS: &[(&str, &str)] = &[
@@ -1945,7 +1943,6 @@ const TODO_KEYS: &[(&str, &str)] = &[
     ("a", "add todo below"),
     ("Tab", "to folders"),
     ("Esc", "back / close"),
-    ("q", "close"),
 ];
 
 const FOLDER_KEYS: &[(&str, &str)] = &[
@@ -1956,7 +1953,6 @@ const FOLDER_KEYS: &[(&str, &str)] = &[
     ("w", "new worktree"),
     ("Tab", "to agents"),
     ("Esc", "back / close"),
-    ("q", "close"),
 ];
 
 /// Every key the panel takes, wrapped over as many lines as `width` needs.

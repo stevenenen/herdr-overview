@@ -130,7 +130,6 @@ description = "Overview: agents and todos"
 | `Enter` on a folder | Open a tab in it |
 | `w` on a folder | New worktree: type a description; branch, folder and workspace get it as `lower-hyphen-words`, the tab gets it in full |
 | `Esc` | Stop typing, then clear the filter, then close |
-| `q` | Close |
 
 ## Development
 
