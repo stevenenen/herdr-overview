@@ -1506,19 +1506,23 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
     );
     let list_area = section(f, area, Line::from(top), search, columns);
 
+    // The agent you came from is drawn in the accent color.
+    let current = current_pane();
     let items: Vec<ListItem> = agents
         .iter()
         .enumerate()
         .map(|(i, a)| {
+            let here = current.as_deref() == Some(a.pane_id.as_str());
+            let text = if here { palette::ACCENT } else { palette::TEXT };
             ListItem::new(Line::from(vec![
                 number(i),
                 Span::styled(
                     format!("{} ", a.status.icon()),
                     Style::new().fg(a.status.color()),
                 ),
-                Span::styled(fit(&a.tab, tab_w), Style::new().fg(palette::TEXT).bold()),
+                Span::styled(fit(&a.tab, tab_w), Style::new().fg(text).bold()),
                 gap(),
-                Span::styled(fit(&a.workspace, ws_w), Style::new().fg(palette::TEXT)),
+                Span::styled(fit(&a.workspace, ws_w), Style::new().fg(text)),
             ]))
         })
         .collect();
