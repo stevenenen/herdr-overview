@@ -44,7 +44,12 @@ in your notes.
   Enter again goes back to that tab instead of starting another; if the tab was closed, a
   new one opens.
 - **Space** crosses a todo out (`☒`), Space again undoes it. This only marks it in the
-  overview; your notes are never written to.
+  overview; the note is left alone.
+- **`o`** opens the todo's note in `$VISUAL`, `$EDITOR` or `vi`, at its line. The overview comes
+  back, reloaded, when you close the editor.
+- **`a`** adds a todo right below the selected one, in the same note, with the same indent and
+  `#todo/` tag. Pick any todo in the place you want it, press `a`, type, Enter. This is the
+  only key that writes to your notes.
 - Links, cross-outs and focus times live in the plugin's state directory
   (`$HERDR_PLUGIN_STATE_DIR`). A `pane.focused` hook records when you last focused each pane.
 - **`u`** opens a GitHub issue or pull request link: paste it, press Enter. The overview finds
@@ -109,6 +114,8 @@ description = "Overview: agents and todos"
 | `Enter` on an agent | Jump to it |
 | `Enter` on a todo | Open or return to its Claude tab |
 | `Space` on a todo | Cross out / undo |
+| `o` on a todo | Open its note at that line |
+| `a` on a todo | Add a todo below it, in the same note |
 | `r` | Reload |
 | `Esc` | Stop typing, then clear the filter, then close |
 | `q` | Close |

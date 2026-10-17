@@ -79,12 +79,15 @@ struct Agent {
     pane_id: String,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default, Clone)]
 struct Todo {
     group: String,
     /// The project it belongs to: the folder or note one level below the area folder.
     topic: String,
     text: String,
+    /// The note it came from, and its 1-based line there.
+    file: PathBuf,
+    line: usize,
 }
 
 const GROUP_COLORS: [Color; 6] = [
@@ -226,8 +229,8 @@ fn parse_todo(line: &str) -> Option<Todo> {
     let text = words.join(" ").replace("**", "");
     (!text.is_empty()).then_some(Todo {
         group,
-        topic: String::new(),
         text,
+        ..Todo::default()
     })
 }
 
@@ -235,13 +238,18 @@ fn parse_todo(line: &str) -> Option<Todo> {
 fn parse_file(text: &str) -> Vec<Todo> {
     let mut in_code = false;
     text.lines()
-        .filter(|line| {
+        .enumerate()
+        .filter(|(_, line)| {
             if line.trim_start().starts_with("```") {
                 in_code = !in_code;
             }
             !in_code
         })
-        .filter_map(parse_todo)
+        .filter_map(|(i, line)| {
+            let mut todo = parse_todo(line)?;
+            todo.line = i + 1;
+            Some(todo)
+        })
         .collect()
 }
 
@@ -280,6 +288,7 @@ fn scan(root: &Path, dir: &Path, todos: &mut Vec<Todo>) {
             let relative = path.strip_prefix(root).unwrap_or(&path);
             todos.extend(parse_file(&text).into_iter().map(|mut t| {
                 (t.group, t.topic) = place(relative, &t.group);
+                t.file = path.clone();
                 t
             }));
         }
@@ -661,6 +670,51 @@ fn open_link(url: &str, repo_dirs: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
+/// Inserts `- [ ] <text>` right after `after`'s line in its note, with the same indent and
+/// `#todo/` tag, and returns the new file contents.
+fn insert_todo(note: &str, after: &Todo, text: &str) -> String {
+    let mut lines: Vec<&str> = note.lines().collect();
+    let anchor = lines
+        .get(after.line.saturating_sub(1))
+        .copied()
+        .unwrap_or("");
+    let indent: String = anchor.chars().take_while(|c| c.is_whitespace()).collect();
+    let bullet = if anchor.trim_start().starts_with('*') {
+        "*"
+    } else {
+        "-"
+    };
+    let tag = anchor
+        .split_whitespace()
+        .find(|w| w.starts_with("#todo/"))
+        .map(|t| format!(" {t}"))
+        .unwrap_or_default();
+    let new = format!("{indent}{bullet} [ ] {}{tag}", text.trim());
+    lines.insert(after.line.min(lines.len()), &new);
+    let mut out = lines.join("\n");
+    if note.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// Opens `todo`'s note at its line in `$VISUAL`, `$EDITOR` or `vi`, and waits for it.
+fn edit_source(todo: &Todo) {
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .ok()
+        .filter(|e| !e.is_empty())
+        .unwrap_or_else(|| "vi".into());
+    // `+<line>` is understood by vi, vim, nvim, nano, micro, helix and emacs.
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"+$1\" \"$2\""))
+        .arg("sh")
+        .arg(todo.line.to_string())
+        .arg(&todo.file)
+        .status();
+}
+
 /// Groups with their counts, biggest first.
 /// Case-insensitive: every word of the filter appears in one of the fields.
 fn matches(filter: &str, fields: &[&str]) -> bool {
@@ -711,6 +765,8 @@ struct App {
     link: Option<String>,
     notice: Option<String>,
     repo_dirs: Vec<PathBuf>,
+    /// The todo being typed after `a`, added below the selected one.
+    adding: Option<String>,
 }
 
 impl App {
@@ -740,6 +796,7 @@ impl App {
             link: None,
             notice: None,
             repo_dirs: config_dirs(&config, "repos"),
+            adding: None,
         };
         if app.agents.is_empty() {
             app.focus = Focus::Todos;
@@ -836,6 +893,19 @@ impl App {
         }
     }
 
+    /// Re-reads agents and notes, keeping filters, focus and the selected position.
+    fn reload(&mut self) {
+        let mut fresh = App::load();
+        fresh.agent_filter = std::mem::take(&mut self.agent_filter);
+        fresh.todo_filter = std::mem::take(&mut self.todo_filter);
+        fresh.focus = std::mem::replace(&mut self.focus, Focus::Agents);
+        fresh.group = self.group.min(fresh.groups.len());
+        fresh.notice = self.notice.take();
+        fresh.agent_list.select(self.agent_list.selected());
+        fresh.todo_list.select(self.todo_list.selected());
+        *self = fresh;
+    }
+
     fn selected_todo(&self) -> Option<&Todo> {
         let i = self.todo_list.selected()?;
         self.visible_todos().get(i).copied()
@@ -875,6 +945,32 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
             continue;
         };
         if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        if let Some(text) = app.adding.as_mut() {
+            match key.code {
+                KeyCode::Char(c) => text.push(c),
+                KeyCode::Backspace => {
+                    text.pop();
+                }
+                KeyCode::Esc => app.adding = None,
+                KeyCode::Enter => {
+                    let text = app.adding.take().unwrap_or_default();
+                    if let Some(after) = app.selected_todo().cloned()
+                        && !text.trim().is_empty()
+                    {
+                        let written = fs::read_to_string(&after.file)
+                            .map(|note| insert_todo(&note, &after, &text))
+                            .and_then(|note| fs::write(&after.file, note));
+                        app.notice = Some(match written {
+                            Ok(()) => format!("added to {}", after.file.display()),
+                            Err(e) => format!("could not add: {e}"),
+                        });
+                        app.reload();
+                    }
+                }
+                _ => {}
+            }
             continue;
         }
         if let Some(link) = app.link.as_mut() {
@@ -942,11 +1038,20 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
                 app.typing = false;
                 app.cycle_group(-1)
             }
-            KeyCode::Char('r') => {
-                let (agent_filter, todo_filter) =
-                    (app.agent_filter.clone(), app.todo_filter.clone());
-                app = App::load();
-                (app.agent_filter, app.todo_filter) = (agent_filter, todo_filter);
+            KeyCode::Char('r') => app.reload(),
+            KeyCode::Char('o') if app.focus == Focus::Todos => {
+                if let Some(todo) = app.selected_todo().cloned() {
+                    ratatui::restore();
+                    edit_source(&todo);
+                    *terminal = ratatui::init();
+                    app.reload();
+                }
+            }
+            KeyCode::Char('a') if app.focus == Focus::Todos => {
+                if app.selected_todo().is_some() {
+                    app.adding = Some(String::new());
+                    app.notice = None;
+                }
             }
             KeyCode::Char('g') | KeyCode::Home => app.step(isize::MIN / 2),
             KeyCode::Char('G') | KeyCode::End => app.step(isize::MAX / 2),
@@ -959,11 +1064,7 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
             }
             KeyCode::Enter => {
                 if let Some(todo) = app.selected_todo() {
-                    let todo = Todo {
-                        group: todo.group.clone(),
-                        topic: todo.topic.clone(),
-                        text: todo.text.clone(),
-                    };
+                    let todo = todo.clone();
                     open_todo(&mut app.memory, &todo);
                     return Ok(());
                 }
@@ -1039,15 +1140,27 @@ fn draw(f: &mut Frame, app: &mut App) {
         Block::new().style(Style::new().bg(palette::BG).fg(palette::TEXT)),
         area,
     );
-    let bar = app.link.is_some() || app.notice.is_some();
+    let bar = app.link.is_some() || app.adding.is_some() || app.notice.is_some();
     let [bar_area, body] = Layout::vertical([
         Constraint::Length(if bar { 2 } else { 0 }),
         Constraint::Fill(1),
     ])
     .areas(area);
     if bar {
-        let line = match &app.link {
-            Some(link) => Line::from(vec![
+        let line = match (&app.link, &app.adding) {
+            (_, Some(text)) => Line::from(vec![
+                Span::styled(
+                    " New todo ",
+                    Style::new().fg(palette::BG).bg(palette::GREEN).bold(),
+                ),
+                Span::styled(format!(" {text}"), Style::new().fg(palette::TEXT)),
+                Span::styled("▏", Style::new().fg(palette::GREEN)),
+                Span::styled(
+                    "   Enter add below the selected todo  Esc cancel",
+                    Style::new().fg(palette::SUBTEXT),
+                ),
+            ]),
+            (Some(link), None) => Line::from(vec![
                 Span::styled(
                     " GitHub link ",
                     Style::new().fg(palette::BG).bg(palette::ACCENT).bold(),
@@ -1059,7 +1172,7 @@ fn draw(f: &mut Frame, app: &mut App) {
                     Style::new().fg(palette::SUBTEXT),
                 ),
             ]),
-            None => Line::from(Span::styled(
+            (None, None) => Line::from(Span::styled(
                 format!(" {}", app.notice.as_deref().unwrap_or_default()),
                 Style::new().fg(palette::YELLOW),
             )),
@@ -1374,6 +1487,8 @@ const TODO_KEYS: &[(&str, &str)] = &[
     ("h/l ←/→", "group"),
     ("Enter", "Claude tab"),
     ("Space", "cross out"),
+    ("o", "open note"),
+    ("a", "add todo below"),
     ("Tab", "to agents"),
     ("r", "reload"),
     ("Esc", "back / close"),
@@ -1424,7 +1539,8 @@ mod tests {
             Some(Todo {
                 group: "home".into(),
                 topic: String::new(),
-                text: "Book the dentist (2026-08-26)".into()
+                text: "Book the dentist (2026-08-26)".into(),
+                ..Todo::default()
             })
         );
         assert_eq!(
@@ -1432,7 +1548,8 @@ mod tests {
             Some(Todo {
                 group: "other".into(),
                 topic: String::new(),
-                text: "Untagged task".into()
+                text: "Untagged task".into(),
+                ..Todo::default()
             })
         );
         assert_eq!(parse_todo("- [x] Finished"), None);
@@ -1480,6 +1597,7 @@ mod tests {
             group: "g".into(),
             topic: "x".into(),
             text: t.into(),
+            ..Todo::default()
         };
         let mut app = App {
             agents: vec![],
@@ -1498,6 +1616,7 @@ mod tests {
             link: None,
             notice: None,
             repo_dirs: vec![],
+            adding: None,
         };
         app.memory.used = HashMap::from([("c".into(), 200), ("b".into(), 100)]);
         let order: Vec<_> = app
@@ -1527,6 +1646,7 @@ mod tests {
             group: "g".into(),
             topic: topic.into(),
             text: t.into(),
+            ..Todo::default()
         };
         let mut app = App {
             agents: vec![],
@@ -1550,6 +1670,7 @@ mod tests {
             link: None,
             notice: None,
             repo_dirs: vec![],
+            adding: None,
         };
         let order = |app: &App| -> Vec<String> {
             app.visible_todos().iter().map(|t| t.text.clone()).collect()
@@ -1631,6 +1752,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_file_records_each_todo_line() {
+        let lines: Vec<_> = parse_file("# Title\n- [ ] One\n\n  - [ ] Two")
+            .into_iter()
+            .map(|t| t.line)
+            .collect();
+        assert_eq!(lines, vec![2, 4]);
+    }
+
+    #[test]
+    fn insert_todo_copies_indent_bullet_and_tag() {
+        let note = "# Plan\n  * [ ] First #todo/work (2026-01-01)\n- [ ] Last\n";
+        let after = Todo {
+            line: 2,
+            ..Todo::default()
+        };
+        assert_eq!(
+            insert_todo(note, &after, " Second "),
+            "# Plan\n  * [ ] First #todo/work (2026-01-01)\n  * [ ] Second #todo/work\n- [ ] Last\n"
+        );
+    }
+
+    #[test]
     fn matches_every_word_case_insensitively_across_fields() {
         assert!(matches("", &["anything"]));
         assert!(matches("API fix", &["api", "fix login"]));
@@ -1656,6 +1799,7 @@ mod tests {
             link: None,
             notice: None,
             repo_dirs: vec![],
+            adding: None,
         };
         assert!(!app.back_out());
         assert!(!app.typing);
@@ -1678,6 +1822,7 @@ mod tests {
             group: g.into(),
             topic: String::new(),
             text: "x".into(),
+            ..Todo::default()
         };
         let todos = [todo("b"), todo("a"), todo("a"), todo("c")];
         assert_eq!(
