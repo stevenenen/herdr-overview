@@ -38,6 +38,16 @@ impl Status {
         Status::Unknown,
     ];
 
+    fn name(self) -> &'static str {
+        match self {
+            Status::Blocked => "blocked",
+            Status::Done => "done",
+            Status::Working => "working",
+            Status::Idle => "idle",
+            Status::Unknown => "no agent",
+        }
+    }
+
     fn parse(s: &str) -> Self {
         match s {
             "blocked" => Status::Blocked,
@@ -1438,6 +1448,24 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::new().fg(status.color()).bold(),
             ));
         }
+    }
+    // What the icons mean, right-aligned on the same strip.
+    let legend: Vec<Span> = Status::ALL
+        .iter()
+        .flat_map(|s| {
+            [
+                Span::styled(s.icon(), Style::new().fg(s.color())),
+                Span::styled(
+                    format!(" {}  ", s.name()),
+                    Style::new().fg(palette::SUBTEXT),
+                ),
+            ]
+        })
+        .collect();
+    let used: usize = top.iter().chain(&legend).map(|s| s.content.width()).sum();
+    if used < area.width as usize {
+        top.push(Span::raw(" ".repeat(area.width as usize - used)));
+        top.extend(legend);
     }
     // Index, icon, then tab, workspace and title columns.
     // Each column keeps a two-space gap after it, so a full one never runs into the next.
