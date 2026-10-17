@@ -117,7 +117,7 @@ description = "Overview: agents and todos"
 | `Space` on a todo | Cross out / undo |
 | `o` on a todo | Open its note: in Obsidian when it is in a vault, else in your editor |
 | `a` on a todo | Add a todo below it, in the same note |
-| `Esc` | Stop typing, then clear the filter |
+| `Esc` | Stop typing, then clear the filter, then close |
 | `q` | Close |
 
 ## Development

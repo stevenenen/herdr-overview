@@ -903,7 +903,7 @@ impl App {
         }
     }
 
-    /// Esc steps back one layer: stop typing, then clear the filter. True when nothing was left.
+    /// Esc steps back one layer: stop typing, then clear the filter, then close.
     fn back_out(&mut self) -> bool {
         if self.typing {
             self.typing = false;
@@ -1121,7 +1121,9 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         }
         match key.code {
             KeyCode::Esc => {
-                app.back_out();
+                if app.back_out() {
+                    return Ok(());
+                }
             }
             KeyCode::Char('q') => return Ok(()),
             KeyCode::Char('/') => app.typing = true,
@@ -1581,7 +1583,7 @@ const AGENT_KEYS: &[(&str, &str)] = &[
     ("g/G", "top/bottom"),
     ("Enter", "go to agent"),
     ("Tab", "to todos"),
-    ("Esc", "back"),
+    ("Esc", "back / close"),
     ("q", "close"),
 ];
 
@@ -1595,7 +1597,7 @@ const TODO_KEYS: &[(&str, &str)] = &[
     ("o", "open note"),
     ("a", "add todo below"),
     ("Tab", "to agents"),
-    ("Esc", "back"),
+    ("Esc", "back / close"),
     ("q", "close"),
 ];
 
