@@ -51,7 +51,7 @@ refresh every 2 seconds without moving your selection.
   `t` again goes back to that tab; if the tab was closed, a new one opens.
 - **Folders**, right of the todos, lists each `[repos] dirs` folder and the folders inside it
   (`⎇` marks a git repo). Enter opens a tab there; `w` asks for a description and opens a
-  worktree of that repo named after it.
+  worktree of that repo named after it, with Claude started in it.
 - **Space** crosses a todo out (`☒`), Space again undoes it. This only marks it in the
   overview; the note is left alone.
 - **`o`** opens the todo's note where it lives. A note inside an Obsidian vault (one Obsidian

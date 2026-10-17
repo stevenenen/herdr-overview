@@ -471,7 +471,7 @@ fn work_on(memory: &mut Memory, todo: &Todo, repo_dirs: &[PathBuf]) -> Result<()
                 Some(&base),
                 &todo.text,
                 &todo.text,
-                Some(&todo.text),
+                &todo.text,
             )
         }
         None => {
@@ -702,14 +702,7 @@ fn open_link(url: &str, repo_dirs: &[PathBuf]) -> Result<(), String> {
     } else {
         Some(default_base(&clone))
     };
-    open_worktree(
-        &clone,
-        &branch,
-        base.as_deref(),
-        &label,
-        &label,
-        Some(url.trim()),
-    )
+    open_worktree(&clone, &branch, base.as_deref(), &label, &label, url.trim())
 }
 
 /// The remote's default branch, freshly fetched: `origin/main`.
@@ -726,15 +719,15 @@ fn default_base(clone: &Path) -> String {
     base
 }
 
-/// Opens `branch` as a worktree of `clone` with Claude started on `prompt`, or reopens it
-/// when that worktree already exists.
+/// Opens `branch` as a worktree of `clone` with Claude started (on `prompt` when not empty),
+/// or reopens it when that worktree already exists.
 fn open_worktree(
     clone: &Path,
     branch: &str,
     base: Option<&str>,
     workspace: &str,
     tab: &str,
-    prompt: Option<&str>,
+    prompt: &str,
 ) -> Result<(), String> {
     let label: String = workspace.chars().take(80).collect();
     let tab_label: String = tab.chars().take(80).collect();
@@ -764,15 +757,16 @@ fn open_worktree(
     if let Some(tab) = created["tab"]["tab_id"].as_str() {
         herdr(&["tab", "rename", tab, &tab_label]);
     }
-    if let Some(pane) = created["root_pane"]["pane_id"].as_str()
-        && let Some(prompt) = prompt
-    {
+    if let Some(pane) = created["root_pane"]["pane_id"].as_str() {
         let _ = Command::new(herdr_bin())
             .args([
                 "pane",
                 "run",
                 pane,
-                &format!("claude {}", shell_quote(prompt)),
+                &match prompt {
+                    "" => "claude".to_string(),
+                    p => format!("claude {}", shell_quote(p)),
+                },
             ])
             .output();
     }
@@ -819,7 +813,7 @@ fn new_worktree(dir: &Path, text: &str) -> Result<(), String> {
     .ok_or_else(|| format!("{} is not a git repository", dir.display()))?;
     let clone = Path::new(&common).parent().unwrap_or(dir).to_path_buf();
     let base = default_base(&clone);
-    open_worktree(&clone, &name, Some(&base), &name, text.trim(), None)
+    open_worktree(&clone, &name, Some(&base), &name, text.trim(), "")
 }
 
 /// Enter in Folders: a plain tab in the folder, named after it.
