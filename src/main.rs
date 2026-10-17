@@ -1,4 +1,4 @@
-//! Herdr Overview: one tab with the agents that need you and every open todo, kept live.
+//! Herdr Overview: one popup with the agents that need you and every open todo, kept live.
 
 use std::{
     collections::HashMap,
@@ -993,45 +993,9 @@ impl App {
     }
 }
 
-/// The `open` action: back to the overview's tab, or a new one when it was closed.
-fn open_overview() {
-    let Some(path) = std::env::var("HERDR_PLUGIN_STATE_DIR")
-        .ok()
-        .map(|d| PathBuf::from(d).join("tab"))
-    else {
-        return;
-    };
-    if let Ok(tab) = fs::read_to_string(&path)
-        && herdr(&["tab", "focus", tab.trim()]).is_some()
-    {
-        return;
-    }
-    let plugin = std::env::var("HERDR_PLUGIN_ID").unwrap_or_default();
-    let opened = herdr(&[
-        "plugin",
-        "pane",
-        "open",
-        "--plugin",
-        &plugin,
-        "--entrypoint",
-        "overview",
-        "--placement",
-        "tab",
-        "--focus",
-    ]);
-    if let Some(tab) = opened
-        .as_ref()
-        .and_then(|o| o["plugin_pane"]["pane"]["tab_id"].as_str())
-    {
-        herdr(&["tab", "rename", tab, "Overview"]);
-        let _ = fs::write(path, tab);
-    }
-}
-
 fn main() -> std::io::Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("track") => track_focus(),
-        Some("open") => open_overview(),
         _ => {
             let mut terminal = ratatui::init();
             let result = run(&mut terminal);
@@ -1097,7 +1061,10 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
                     let url = app.link.take().unwrap_or_default();
                     app.notice = Some(format!("opening {}…", url.trim()));
                     terminal.draw(|f| draw(f, &mut app))?;
-                    app.notice = open_link(&url, &app.repo_dirs).err();
+                    match open_link(&url, &app.repo_dirs) {
+                        Ok(()) => return Ok(()),
+                        Err(e) => app.notice = Some(e),
+                    }
                 }
                 _ => {}
             }
@@ -1172,12 +1139,14 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
                 let agents = app.visible_agents();
                 if let Some(a) = app.agent_list.selected().and_then(|i| agents.get(i)) {
                     herdr(&["agent", "focus", &a.pane_id]);
+                    return Ok(());
                 }
             }
             KeyCode::Enter => {
                 if let Some(todo) = app.selected_todo() {
                     let todo = todo.clone();
                     open_todo(&mut app.memory, &todo);
+                    return Ok(());
                 }
             }
             KeyCode::Char(' ') if app.focus == Focus::Todos => {

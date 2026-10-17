@@ -1,7 +1,7 @@
 # Herdr Overview
 
-One live tab for a [Herdr](https://herdr.dev) session: which agents need you, and every open todo
-in your notes. It stays open: `prefix+a` jumps back to its tab, and agents and todos
+One popup for a [Herdr](https://herdr.dev) session: which agents need you, and every open todo
+in your notes. While it is open, agents and todos
 refresh every 2 seconds without moving your selection.
 
 ```

@@ -1,7 +1,7 @@
 id = "stevenenen.herdr-overview"
 name = "Herdr Overview"
-version = "0.9.1"
-description = "Agents that need you and every open todo, in one live tab."
+version = "0.9.2"
+description = "Agents that need you and every open todo, in one popup."
 min_herdr_version = "0.7.4"
 platforms = ["macos", "linux"]
 
@@ -13,7 +13,7 @@ id = "open"
 title = "Open Overview"
 description = "Agents that need you and every open todo"
 contexts = ["global", "workspace"]
-command = ["./target/release/herdr-overview", "open"]
+command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin \"$HERDR_PLUGIN_ID\" --entrypoint overview --focus"]
 
 [[panes]]
 id = "overview"
