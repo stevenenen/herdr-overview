@@ -698,6 +698,69 @@ fn insert_todo(note: &str, after: &Todo, text: &str) -> String {
     out
 }
 
+/// The Obsidian vaults this machine knows, from Obsidian's own `obsidian.json`.
+fn obsidian_vaults() -> Vec<PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let config = if cfg!(target_os = "macos") {
+        "Library/Application Support/obsidian/obsidian.json"
+    } else {
+        ".config/obsidian/obsidian.json"
+    };
+    fs::read(Path::new(&home).join(config))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| {
+            v["vaults"].as_object().map(|vaults| {
+                vaults
+                    .values()
+                    .filter_map(|v| v["path"].as_str().map(PathBuf::from))
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// `obsidian://open?vault=<name>&file=<path in vault>` when `file` sits in one of `vaults`.
+fn obsidian_url(file: &Path, vaults: &[PathBuf]) -> Option<String> {
+    let (vault, inside) = vaults
+        .iter()
+        .find_map(|v| Some((v, file.strip_prefix(v).ok()?)))?;
+    let name = vault.file_name()?.to_string_lossy();
+    let inside = inside.with_extension("");
+    Some(format!(
+        "obsidian://open?vault={}&file={}",
+        percent_encode(&name),
+        percent_encode(&inside.to_string_lossy())
+    ))
+}
+
+fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// Opens a note that lives in an Obsidian vault in Obsidian. Returns false when it does not.
+fn open_in_obsidian(todo: &Todo) -> bool {
+    let Some(url) = obsidian_url(&todo.file, &obsidian_vaults()) else {
+        return false;
+    };
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    Command::new(opener)
+        .arg(url)
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 /// Opens `todo`'s note at its line in `$VISUAL`, `$EDITOR` or `vi`, and waits for it.
 fn edit_source(todo: &Todo) {
     let editor = std::env::var("VISUAL")
@@ -1041,10 +1104,14 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
             KeyCode::Char('r') => app.reload(),
             KeyCode::Char('o') if app.focus == Focus::Todos => {
                 if let Some(todo) = app.selected_todo().cloned() {
-                    ratatui::restore();
-                    edit_source(&todo);
-                    *terminal = ratatui::init();
-                    app.reload();
+                    if open_in_obsidian(&todo) {
+                        app.notice = Some(format!("opened {} in Obsidian", todo.topic));
+                    } else {
+                        ratatui::restore();
+                        edit_source(&todo);
+                        *terminal = ratatui::init();
+                        app.reload();
+                    }
                 }
             }
             KeyCode::Char('a') if app.focus == Focus::Todos => {
@@ -1771,6 +1838,16 @@ mod tests {
             insert_todo(note, &after, " Second "),
             "# Plan\n  * [ ] First #todo/work (2026-01-01)\n  * [ ] Second #todo/work\n- [ ] Last\n"
         );
+    }
+
+    #[test]
+    fn obsidian_url_names_vault_and_note_without_extension() {
+        let vaults = [PathBuf::from("/notes/My Vault")];
+        assert_eq!(
+            obsidian_url(Path::new("/notes/My Vault/Work/Plan — v2.md"), &vaults),
+            Some("obsidian://open?vault=My%20Vault&file=Work%2FPlan%20%E2%80%94%20v2".into())
+        );
+        assert_eq!(obsidian_url(Path::new("/elsewhere/a.md"), &vaults), None);
     }
 
     #[test]

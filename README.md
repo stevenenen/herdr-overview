@@ -45,8 +45,9 @@ in your notes.
   new one opens.
 - **Space** crosses a todo out (`☒`), Space again undoes it. This only marks it in the
   overview; the note is left alone.
-- **`o`** opens the todo's note in `$VISUAL`, `$EDITOR` or `vi`, at its line. The overview comes
-  back, reloaded, when you close the editor.
+- **`o`** opens the todo's note where it lives. A note inside an Obsidian vault (one Obsidian
+  knows about) opens in Obsidian. Any other note opens in `$VISUAL`, `$EDITOR` or `vi` at the
+  todo's line, and the overview comes back, reloaded, when you close the editor.
 - **`a`** adds a todo right below the selected one, in the same note, with the same indent and
   `#todo/` tag. Pick any todo in the place you want it, press `a`, type, Enter. This is the
   only key that writes to your notes.
@@ -114,7 +115,7 @@ description = "Overview: agents and todos"
 | `Enter` on an agent | Jump to it |
 | `Enter` on a todo | Open or return to its Claude tab |
 | `Space` on a todo | Cross out / undo |
-| `o` on a todo | Open its note at that line |
+| `o` on a todo | Open its note: in Obsidian when it is in a vault, else in your editor |
 | `a` on a todo | Add a todo below it, in the same note |
 | `r` | Reload |
 | `Esc` | Stop typing, then clear the filter, then close |
