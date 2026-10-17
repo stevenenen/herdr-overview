@@ -1054,6 +1054,15 @@ impl App {
         }
     }
 
+    /// Starts on the most recent agent that is not the one you came from, so Enter jumps back.
+    fn select_other_agent(&mut self, current: Option<&str>) {
+        let i = self
+            .agents
+            .iter()
+            .position(|a| Some(a.pane_id.as_str()) != current);
+        self.agent_list.select(i.or(Some(0)));
+    }
+
     fn selected_todo(&self) -> Option<&Todo> {
         let i = self.todo_list.selected()?;
         self.visible_todos().get(i).copied()
@@ -1084,8 +1093,16 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
+/// The pane you were in when the overview opened.
+fn current_pane() -> Option<String> {
+    let context = std::env::var("HERDR_PLUGIN_CONTEXT_JSON").ok()?;
+    let v: Value = serde_json::from_str(&context).ok()?;
+    v["focused_pane_id"].as_str().map(str::to_string)
+}
+
 fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
     let mut app = App::load();
+    app.select_other_agent(current_pane().as_deref());
     let mut refreshed = Instant::now();
     loop {
         terminal.draw(|f| draw(f, &mut app))?;
@@ -1755,6 +1772,35 @@ mod tests {
     #[test]
     fn shell_quote_keeps_quotes_and_dollars_literal() {
         assert_eq!(shell_quote("it's $HOME"), r"'it'\''s $HOME'");
+    }
+
+    #[test]
+    fn starts_on_the_most_recent_other_agent() {
+        let agents = json!({"agents": [{"pane_id": "p1"}, {"pane_id": "p2"}]});
+        let focused = HashMap::from([("p1".into(), 200), ("p2".into(), 100)]);
+        let mut app = App {
+            agents: parse_agents(&agents, &HashMap::new(), &HashMap::new(), &focused),
+            todos: vec![],
+            groups: vec![],
+            group: 0,
+            focus: Focus::Agents,
+            agent_list: ListState::default(),
+            todo_list: ListState::default(),
+            todo_offset: 0,
+            configured: true,
+            memory: Memory::default(),
+            agent_filter: String::new(),
+            todo_filter: String::new(),
+            typing: false,
+            link: None,
+            notice: None,
+            repo_dirs: vec![],
+            adding: None,
+        };
+        app.select_other_agent(Some("p1"));
+        assert_eq!(app.agent_list.selected(), Some(1));
+        app.select_other_agent(Some("shell"));
+        assert_eq!(app.agent_list.selected(), Some(0));
     }
 
     #[test]

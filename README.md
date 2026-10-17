@@ -31,7 +31,8 @@ refresh every 2 seconds without moving your selection.
 
 - **Agents** are sorted most recently focused first; agents you have not focused yet follow,
   by urgency: blocked, done, working, idle. Same symbols and colors as
-  the Herdr sidebar. Enter jumps to the agent.
+  the Herdr sidebar. The overview starts on the most recent agent other than the one you are
+  in, so `prefix+a` then Enter jumps back to it. Enter jumps to the agent.
 - **Todos** are every open Markdown checkbox (`- [ ] ...`) in the folders you configure.
   Code blocks are skipped. They are grouped two levels deep, from where the note lives:
   - the **area** (the bars, `h`/`l` to pick one) is the first word of the top folder, so
