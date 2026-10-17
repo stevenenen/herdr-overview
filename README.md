@@ -111,7 +111,7 @@ description = "Overview: agents and todos"
 | `j` / `k`, `↑` / `↓` | Move |
 | `g` / `G`, `Home` / `End` | Top / bottom |
 | `Tab` | Switch between agents and todos |
-| `h` / `l`, `←` / `→` | Previous / next todo group (Todo panel) |
+| `h` / `l`, `←` / `→` | Previous / next todo group (Todo panel); the overview reopens on it |
 | `Enter` on an agent | Jump to it |
 | `Enter` on a todo | Open or return to its Claude tab |
 | `Space` on a todo | Cross out / undo |

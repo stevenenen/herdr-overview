@@ -327,6 +327,8 @@ struct Memory {
     crossed: Vec<String>,
     /// When each todo's Claude tab was last opened, so recent ones sort first.
     used: HashMap<String, u64>,
+    /// The todo group last opened with h/l, by name; empty means all.
+    group: String,
 }
 
 impl Memory {
@@ -359,6 +361,7 @@ impl Memory {
             tabs,
             crossed,
             used,
+            group: v["group"].as_str().unwrap_or_default().to_string(),
         }
     }
 
@@ -372,7 +375,7 @@ impl Memory {
 
     fn save(&self) {
         if let Some(p) = Self::path() {
-            let v = serde_json::json!({ "tabs": self.tabs, "crossed": self.crossed, "used": self.used });
+            let v = serde_json::json!({ "tabs": self.tabs, "crossed": self.crossed, "used": self.used, "group": self.group });
             let _ = fs::write(p, v.to_string());
         }
     }
@@ -864,6 +867,11 @@ impl App {
         if app.agents.is_empty() {
             app.focus = Focus::Todos;
         }
+        app.group = app
+            .groups
+            .iter()
+            .position(|(g, _)| *g == app.memory.group)
+            .map_or(0, |i| i + 1);
         app
     }
 
@@ -962,7 +970,6 @@ impl App {
         fresh.agent_filter = std::mem::take(&mut self.agent_filter);
         fresh.todo_filter = std::mem::take(&mut self.todo_filter);
         fresh.focus = std::mem::replace(&mut self.focus, Focus::Agents);
-        fresh.group = self.group.min(fresh.groups.len());
         fresh.notice = self.notice.take();
         fresh.agent_list.select(self.agent_list.selected());
         fresh.todo_list.select(self.todo_list.selected());
@@ -978,6 +985,11 @@ impl App {
         let n = self.groups.len() as isize + 1;
         self.group = (self.group as isize + delta).rem_euclid(n) as usize;
         self.todo_list.select(Some(0));
+        self.memory.group = match self.group {
+            0 => String::new(),
+            n => self.groups[n - 1].0.clone(),
+        };
+        self.memory.save();
     }
 }
 
@@ -1631,7 +1643,10 @@ mod tests {
 
     #[test]
     fn memory_round_trips_and_toggles_crossed() {
-        let mut m = Memory::from_json(&json!({"tabs": {"Book it": "w1:t2"}, "crossed": ["Done"]}));
+        let mut m = Memory::from_json(
+            &json!({"tabs": {"Book it": "w1:t2"}, "crossed": ["Done"], "group": "home"}),
+        );
+        assert_eq!(m.group, "home");
         assert_eq!(m.tabs.get("Book it").map(String::as_str), Some("w1:t2"));
         m.toggle_crossed("Done");
         m.toggle_crossed("New");
