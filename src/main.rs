@@ -404,7 +404,7 @@ fn open_todo(memory: &mut Memory, todo: &Todo) {
     {
         return;
     }
-    let label: String = todo.text.chars().take(30).collect();
+    let label: String = todo.text.chars().take(80).collect();
     let Some(created) = herdr(&["tab", "create", "--label", &label, "--focus"]) else {
         return;
     };
@@ -695,7 +695,7 @@ fn open_worktree(
     label: &str,
     prompt: &str,
 ) -> Result<(), String> {
-    let label: String = label.chars().take(40).collect();
+    let label: String = label.chars().take(80).collect();
     let cwd = clone.to_string_lossy().to_string();
     let (flag, value) = match source_workspace(clone) {
         Some(id) => ("--workspace", id),
