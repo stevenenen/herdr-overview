@@ -1,4 +1,4 @@
-//! Herdr Overview: one popup with the agents that need you and every open todo.
+//! Herdr Overview: one tab with the agents that need you and every open todo, kept live.
 
 use std::{
     collections::HashMap,
@@ -784,7 +784,7 @@ fn groups(todos: &[Todo]) -> Vec<(String, usize)> {
         .into_iter()
         .map(|(g, n)| (g.to_string(), n))
         .collect();
-    list.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    list.sort();
     list
 }
 
@@ -903,7 +903,7 @@ impl App {
         }
     }
 
-    /// Esc steps back one layer: stop typing, then clear the filter, then close.
+    /// Esc steps back one layer: stop typing, then clear the filter. True when nothing was left.
     fn back_out(&mut self) -> bool {
         if self.typing {
             self.typing = false;
@@ -933,16 +933,47 @@ impl App {
         }
     }
 
-    /// Re-reads agents and notes, keeping filters, focus and the selected position.
-    fn reload(&mut self) {
-        let mut fresh = App::load();
-        fresh.agent_filter = std::mem::take(&mut self.agent_filter);
-        fresh.todo_filter = std::mem::take(&mut self.todo_filter);
-        fresh.focus = std::mem::replace(&mut self.focus, Focus::Agents);
-        fresh.notice = self.notice.take();
-        fresh.agent_list.select(self.agent_list.selected());
-        fresh.todo_list.select(self.todo_list.selected());
-        *self = fresh;
+    /// Re-reads agents and notes in place. The selection follows the same agent, todo and group,
+    /// so a refresh never moves what you are looking at.
+    fn refresh(&mut self) {
+        self.adopt(App::load());
+    }
+
+    fn adopt(&mut self, fresh: App) {
+        let agent = self
+            .agent_list
+            .selected()
+            .and_then(|i| self.visible_agents().get(i).map(|a| a.pane_id.clone()));
+        let todo = self.selected_todo().map(|t| t.text.clone());
+        let group = self.group.checked_sub(1).map(|i| self.groups[i].0.clone());
+        self.agents = fresh.agents;
+        self.todos = fresh.todos;
+        self.groups = fresh.groups;
+        self.configured = fresh.configured;
+        self.repo_dirs = fresh.repo_dirs;
+        self.group = group
+            .and_then(|g| self.groups.iter().position(|(n, _)| *n == g))
+            .map_or(0, |i| i + 1);
+        if let Some(i) =
+            agent.and_then(|id| self.visible_agents().iter().position(|a| a.pane_id == id))
+        {
+            self.agent_list.select(Some(i));
+        }
+        if let Some(i) = todo.and_then(|t| self.visible_todos().iter().position(|o| o.text == t)) {
+            self.todo_list.select(Some(i));
+        }
+        self.focus_in_range();
+    }
+
+    /// Keeps both selections inside their lists after items disappear.
+    fn focus_in_range(&mut self) {
+        let agents = self.visible_agents().len();
+        let todos = self.visible_todos().len();
+        for (state, len) in [(&mut self.agent_list, agents), (&mut self.todo_list, todos)] {
+            if let Some(i) = state.selected() {
+                state.select(Some(i.min(len.saturating_sub(1))));
+            }
+        }
     }
 
     fn selected_todo(&self) -> Option<&Todo> {
@@ -962,15 +993,53 @@ impl App {
     }
 }
 
-fn main() -> std::io::Result<()> {
-    if std::env::args().nth(1).as_deref() == Some("track") {
-        track_focus();
-        return Ok(());
+/// The `open` action: back to the overview's tab, or a new one when it was closed.
+fn open_overview() {
+    let Some(path) = std::env::var("HERDR_PLUGIN_STATE_DIR")
+        .ok()
+        .map(|d| PathBuf::from(d).join("tab"))
+    else {
+        return;
+    };
+    if let Ok(tab) = fs::read_to_string(&path)
+        && herdr(&["tab", "focus", tab.trim()]).is_some()
+    {
+        return;
     }
-    let mut terminal = ratatui::init();
-    let result = run(&mut terminal);
-    ratatui::restore();
-    result
+    let plugin = std::env::var("HERDR_PLUGIN_ID").unwrap_or_default();
+    let opened = herdr(&[
+        "plugin",
+        "pane",
+        "open",
+        "--plugin",
+        &plugin,
+        "--entrypoint",
+        "overview",
+        "--placement",
+        "tab",
+        "--focus",
+    ]);
+    if let Some(tab) = opened
+        .as_ref()
+        .and_then(|o| o["plugin_pane"]["pane"]["tab_id"].as_str())
+    {
+        herdr(&["tab", "rename", tab, "Overview"]);
+        let _ = fs::write(path, tab);
+    }
+}
+
+fn main() -> std::io::Result<()> {
+    match std::env::args().nth(1).as_deref() {
+        Some("track") => track_focus(),
+        Some("open") => open_overview(),
+        _ => {
+            let mut terminal = ratatui::init();
+            let result = run(&mut terminal);
+            ratatui::restore();
+            return result;
+        }
+    }
+    Ok(())
 }
 
 fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
@@ -979,7 +1048,7 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
     loop {
         terminal.draw(|f| draw(f, &mut app))?;
         if refreshed.elapsed() > Duration::from_secs(2) {
-            app.agents = load_agents();
+            app.refresh();
             refreshed = Instant::now();
         }
         if !event::poll(Duration::from_millis(500))? {
@@ -1010,7 +1079,7 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
                             Ok(()) => format!("added to {}", after.file.display()),
                             Err(e) => format!("could not add: {e}"),
                         });
-                        app.reload();
+                        app.refresh();
                     }
                 }
                 _ => {}
@@ -1028,10 +1097,7 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
                     let url = app.link.take().unwrap_or_default();
                     app.notice = Some(format!("opening {}…", url.trim()));
                     terminal.draw(|f| draw(f, &mut app))?;
-                    match open_link(&url, &app.repo_dirs) {
-                        Ok(()) => return Ok(()),
-                        Err(e) => app.notice = Some(e),
-                    }
+                    app.notice = open_link(&url, &app.repo_dirs).err();
                 }
                 _ => {}
             }
@@ -1055,13 +1121,11 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         }
         match key.code {
             KeyCode::Esc => {
-                if app.back_out() {
-                    return Ok(());
-                }
+                app.back_out();
             }
             KeyCode::Char('q') => return Ok(()),
             KeyCode::Char('/') => app.typing = true,
-            KeyCode::Char('u') => {
+            KeyCode::Char('u') if app.focus == Focus::Agents => {
                 app.link = Some(String::new());
                 app.notice = None;
             }
@@ -1082,7 +1146,6 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
                 app.typing = false;
                 app.cycle_group(-1)
             }
-            KeyCode::Char('r') => app.reload(),
             KeyCode::Char('o') if app.focus == Focus::Todos => {
                 if let Some(todo) = app.selected_todo().cloned() {
                     if open_in_obsidian(&todo) {
@@ -1091,7 +1154,7 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
                         ratatui::restore();
                         edit_source(&todo);
                         *terminal = ratatui::init();
-                        app.reload();
+                        app.refresh();
                     }
                 }
             }
@@ -1107,14 +1170,12 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
                 let agents = app.visible_agents();
                 if let Some(a) = app.agent_list.selected().and_then(|i| agents.get(i)) {
                     herdr(&["agent", "focus", &a.pane_id]);
-                    return Ok(());
                 }
             }
             KeyCode::Enter => {
                 if let Some(todo) = app.selected_todo() {
                     let todo = todo.clone();
                     open_todo(&mut app.memory, &todo);
-                    return Ok(());
                 }
             }
             KeyCode::Char(' ') if app.focus == Focus::Todos => {
@@ -1234,7 +1295,7 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
 
     // Agents on top, todos below, both full width so tab and title have room.
-    let h = (app.agents.len() as u16 + 7).min(body.height / 2);
+    let h = body.height * 2 / 5;
     let [left, right] = Layout::vertical([Constraint::Length(h), Constraint::Fill(1)]).areas(body);
     let [left, left_keys] = Layout::vertical([
         Constraint::Fill(1),
@@ -1520,13 +1581,11 @@ const AGENT_KEYS: &[(&str, &str)] = &[
     ("g/G", "top/bottom"),
     ("Enter", "go to agent"),
     ("Tab", "to todos"),
-    ("r", "reload"),
-    ("Esc", "back / close"),
+    ("Esc", "back"),
     ("q", "close"),
 ];
 
 const TODO_KEYS: &[(&str, &str)] = &[
-    ("u", "open GitHub link"),
     ("/", "filter"),
     ("j/k ↑/↓", "move"),
     ("g/G", "top/bottom"),
@@ -1536,8 +1595,7 @@ const TODO_KEYS: &[(&str, &str)] = &[
     ("o", "open note"),
     ("a", "add todo below"),
     ("Tab", "to agents"),
-    ("r", "reload"),
-    ("Esc", "back / close"),
+    ("Esc", "back"),
     ("q", "close"),
 ];
 
@@ -1692,6 +1750,48 @@ mod tests {
         app.memory.tabs.insert("late".into(), "w1:t1".into());
         app.memory.toggle_crossed("late");
         assert_eq!(order(&app), vec!["x", "early", "late"]);
+    }
+
+    #[test]
+    fn refresh_keeps_the_selected_todo_and_group() {
+        let todo = |group: &str, t: &str| Todo {
+            group: group.into(),
+            topic: "x".into(),
+            text: t.into(),
+            ..Todo::default()
+        };
+        let app = |todos: Vec<Todo>| App {
+            agents: vec![],
+            groups: groups(&todos),
+            todos,
+            group: 0,
+            focus: Focus::Todos,
+            agent_list: ListState::default(),
+            todo_list: ListState::default(),
+            todo_offset: 0,
+            configured: true,
+            memory: Memory::default(),
+            agent_filter: String::new(),
+            todo_filter: String::new(),
+            typing: false,
+            link: None,
+            notice: None,
+            repo_dirs: vec![],
+            adding: None,
+        };
+        let mut now = app(vec![todo("work", "b"), todo("work", "c")]);
+        now.group = 1;
+        now.todo_list.select(Some(1));
+        now.adopt(app(vec![
+            todo("home", "z"),
+            todo("work", "a"),
+            todo("work", "b"),
+            todo("work", "c"),
+        ]));
+        assert_eq!(now.groups[now.group - 1].0, "work");
+        assert_eq!(now.selected_todo().map(|t| t.text.as_str()), Some("c"));
+        now.adopt(app(vec![todo("work", "a")]));
+        assert_eq!(now.selected_todo().map(|t| t.text.as_str()), Some("a"));
     }
 
     #[test]

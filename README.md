@@ -1,7 +1,8 @@
 # Herdr Overview
 
-One popup for a [Herdr](https://herdr.dev) session: which agents need you, and every open todo
-in your notes.
+One live tab for a [Herdr](https://herdr.dev) session: which agents need you, and every open todo
+in your notes. It stays open: `prefix+a` jumps back to its tab, and agents and todos
+refresh every 2 seconds without moving your selection.
 
 ```
  Agents   × 1  ✓ 2  ◐ 1  ○ 2
@@ -25,12 +26,12 @@ in your notes.
  ▸ Passport  home  1
  1. ☐ ↗ Renew the passport
 ──────────────────────────────────────────────────────────────────────
-  u open GitHub link  / filter  h/l ←/→ group  Enter Claude tab  …
+  / filter  h/l ←/→ group  Enter Claude tab  Space cross out  …
 ```
 
 - **Agents** are sorted most recently focused first; agents you have not focused yet follow,
   by urgency: blocked, done, working, idle. Same symbols and colors as
-  the Herdr sidebar. The list refreshes every 2 seconds. Enter jumps to the agent.
+  the Herdr sidebar. Enter jumps to the agent.
 - **Todos** are every open Markdown checkbox (`- [ ] ...`) in the folders you configure.
   Code blocks are skipped. They are grouped two levels deep, from where the note lives:
   - the **area** (the bars, `h`/`l` to pick one) is the first word of the top folder, so
@@ -105,7 +106,7 @@ description = "Overview: agents and todos"
 
 | Key | Action |
 | --- | --- |
-| `u` | Open a GitHub issue or pull request link as a worktree |
+| `u` | Open a GitHub issue or pull request link as a worktree (Agents panel) |
 | `/` | Filter this panel; typed keys go to the filter |
 | `j` / `k`, `↑` / `↓` | Move |
 | `g` / `G`, `Home` / `End` | Top / bottom |
@@ -116,8 +117,7 @@ description = "Overview: agents and todos"
 | `Space` on a todo | Cross out / undo |
 | `o` on a todo | Open its note: in Obsidian when it is in a vault, else in your editor |
 | `a` on a todo | Add a todo below it, in the same note |
-| `r` | Reload |
-| `Esc` | Stop typing, then clear the filter, then close |
+| `Esc` | Stop typing, then clear the filter |
 | `q` | Close |
 
 ## Development
