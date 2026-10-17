@@ -292,13 +292,13 @@ fn config_path() -> Option<PathBuf> {
         .map(|d| PathBuf::from(d).join("config.toml"))
 }
 
-/// `[todos] dirs = [...]` from the plugin's config.toml, with `~` expanded.
-fn todo_dirs(config: &str) -> Vec<PathBuf> {
+/// `[<section>] dirs = [...]` from the plugin's config.toml, with `~` expanded.
+fn config_dirs(config: &str, section: &str) -> Vec<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_default();
     config
         .parse::<toml::Table>()
         .ok()
-        .and_then(|t| t.get("todos")?.get("dirs")?.as_array().cloned())
+        .and_then(|t| t.get(section)?.get("dirs")?.as_array().cloned())
         .into_iter()
         .flatten()
         .filter_map(|v| {
@@ -420,6 +420,247 @@ fn open_todo(memory: &mut Memory, todo: &Todo) {
     memory.save();
 }
 
+/// An issue or pull request link: `https://github.com/<owner>/<repo>/(issues|pull)/<n>...`.
+#[derive(Debug, PartialEq)]
+struct GithubLink {
+    repo: String,
+    pull: bool,
+    number: u64,
+}
+
+fn parse_link(url: &str) -> Option<GithubLink> {
+    let url = url.trim();
+    let url = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let url = url.strip_prefix("www.").unwrap_or(url);
+    let mut parts = url.strip_prefix("github.com/")?.split('/');
+    let (owner, repo, kind, number) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    let digits: String = number.chars().take_while(char::is_ascii_digit).collect();
+    Some(GithubLink {
+        repo: format!("{owner}/{repo}").to_lowercase(),
+        pull: match kind {
+            "issues" => false,
+            "pull" => true,
+            _ => return None,
+        },
+        number: digits.parse().ok()?,
+    })
+}
+
+/// `owner/repo` from a GitHub remote URL, over HTTPS or SSH (any `github.com*` host alias).
+fn remote_repo(remote: &str) -> Option<String> {
+    let remote = remote.trim();
+    if !remote.contains("github.com") {
+        return None;
+    }
+    let path = match remote.split_once("://") {
+        Some((_, rest)) => rest.split_once('/')?.1,
+        None => remote.split_once(':')?.1,
+    };
+    Some(
+        path.trim_end_matches('/')
+            .trim_end_matches(".git")
+            .to_lowercase(),
+    )
+}
+
+/// The main clone of `repo` among the folders directly inside `dirs`.
+fn find_clone(dirs: &[PathBuf], repo: &str) -> Option<PathBuf> {
+    dirs.iter()
+        .filter_map(|d| fs::read_dir(d).ok())
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        // A main clone has a `.git` folder; a linked worktree only has a `.git` file.
+        .filter(|p| p.join(".git").is_dir())
+        .find(|p| {
+            git(p, &["remote", "get-url", "origin"])
+                .and_then(|url| remote_repo(&url))
+                .as_deref()
+                == Some(repo)
+        })
+}
+
+/// Runs git in `dir`. Credential prompts are off: they would draw over the popup.
+fn git(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// `issue-874-prove-a-customer-can-only-see`: the number plus the title's first words.
+fn branch_name(number: u64, title: &str) -> String {
+    let mut name = format!("issue-{number}");
+    let lower = title.to_lowercase();
+    for word in lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+    {
+        if name.len() + word.len() + 1 > 48 {
+            break;
+        }
+        name = format!("{name}-{word}");
+    }
+    name
+}
+
+/// Herdr's JSON result, or its error message.
+fn herdr_result(args: &[&str]) -> Result<Value, String> {
+    let out = Command::new(herdr_bin())
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    let value: Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    if out.status.success()
+        && let Some(result) = value.get("result")
+    {
+        return Ok(result.clone());
+    }
+    Err(value["error"]["message"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| String::from_utf8_lossy(&out.stderr).trim().to_string()))
+}
+
+/// Where Herdr puts a new worktree: `<worktrees.directory>/<repo folder>/<branch slug>`.
+/// Opening by this path still finds it after the branch inside has been switched.
+fn worktree_path(clone: &Path, branch: &str) -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let configured = std::env::var("HERDR_CONFIG_PATH")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(&home).join(".config/herdr/config.toml"));
+    let dir = fs::read_to_string(configured)
+        .ok()
+        .and_then(|c| c.parse::<toml::Table>().ok())
+        .and_then(|t| Some(t.get("worktrees")?.get("directory")?.as_str()?.to_string()))
+        .unwrap_or_else(|| "~/.herdr/worktrees".into());
+    let dir = match dir.strip_prefix("~/") {
+        Some(rest) => Path::new(&home).join(rest),
+        None => PathBuf::from(dir),
+    };
+    let repo = clone.file_name().unwrap_or_default();
+    dir.join(repo).join(branch.replace('/', "-"))
+}
+
+/// The open workspace of the clone itself. Herdr only starts worktrees from the repo's own
+/// workspace, and resolving `--cwd` can land on a linked worktree of it instead.
+fn source_workspace(clone: &Path) -> Option<String> {
+    let clone = fs::canonicalize(clone).ok()?;
+    herdr(&["workspace", "list"])?["workspaces"]
+        .as_array()?
+        .iter()
+        .find(|w| {
+            let wt = &w["worktree"];
+            wt["is_linked_worktree"] == false
+                && wt["checkout_path"]
+                    .as_str()
+                    .and_then(|p| fs::canonicalize(p).ok())
+                    .as_ref()
+                    == Some(&clone)
+        })
+        .and_then(|w| w["workspace_id"].as_str().map(str::to_string))
+}
+
+/// Opens the worktree for an issue or pull request link, with Claude started on it.
+/// Pasting the same link again reopens that worktree instead of creating another.
+fn open_link(url: &str, repo_dirs: &[PathBuf]) -> Result<(), String> {
+    let link = parse_link(url).ok_or("not a GitHub issue or pull request link")?;
+    if repo_dirs.is_empty() {
+        return Err(format!(
+            "set [repos] dirs in {}",
+            config_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        ));
+    }
+    let clone = find_clone(repo_dirs, &link.repo)
+        .ok_or_else(|| format!("no clone of {} in [repos] dirs", link.repo))?;
+    let (kind, fields) = if link.pull {
+        ("pr", "title,headRefName")
+    } else {
+        ("issue", "title")
+    };
+    let number = link.number.to_string();
+    let out = Command::new("gh")
+        .args([kind, "view", &number, "-R", &link.repo, "--json", fields])
+        .output()
+        .map_err(|e| format!("gh: {e}"))?;
+    let info: Value = serde_json::from_slice(&out.stdout)
+        .map_err(|_| format!("gh: {}", String::from_utf8_lossy(&out.stderr).trim()))?;
+    let title = info["title"].as_str().unwrap_or_default();
+    let branch = match info["headRefName"].as_str() {
+        Some(head) => head.to_string(),
+        None => branch_name(link.number, title),
+    };
+    let label: String = format!("#{} {title}", link.number)
+        .chars()
+        .take(40)
+        .collect();
+    let cwd = clone.to_string_lossy().to_string();
+    let (flag, value) = match source_workspace(&clone) {
+        Some(id) => ("--workspace", id),
+        None => ("--cwd", cwd),
+    };
+    let source = [flag, value.as_str()];
+
+    let path = worktree_path(&clone, &branch);
+    if path.exists() {
+        let path = path.to_string_lossy();
+        let reopen = [
+            "worktree", "open", source[0], source[1], "--path", &path, "--label", &label, "--focus",
+        ];
+        return herdr_result(&reopen).map(|_| ());
+    }
+    let base = if link.pull {
+        git(
+            &clone,
+            &["fetch", "origin", &format!("pull/{number}/head:{branch}")],
+        );
+        None
+    } else {
+        let base = git(
+            &clone,
+            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        )
+        .unwrap_or_else(|| "origin/main".into());
+        git(
+            &clone,
+            &["fetch", "origin", base.trim_start_matches("origin/")],
+        );
+        Some(base)
+    };
+    let mut args = vec![
+        "worktree", "create", source[0], source[1], "--branch", &branch, "--label", &label,
+        "--focus",
+    ];
+    if let Some(base) = &base {
+        args.extend(["--base", base]);
+    }
+    let created = herdr_result(&args)?;
+    if let Some(tab) = created["tab"]["tab_id"].as_str() {
+        herdr(&["tab", "rename", tab, &label]);
+    }
+    if let Some(pane) = created["root_pane"]["pane_id"].as_str() {
+        let _ = Command::new(herdr_bin())
+            .args([
+                "pane",
+                "run",
+                pane,
+                &format!("claude {}", shell_quote(url.trim())),
+            ])
+            .output();
+    }
+    Ok(())
+}
+
 /// Groups with their counts, biggest first.
 /// Case-insensitive: every word of the filter appears in one of the fields.
 fn matches(filter: &str, fields: &[&str]) -> bool {
@@ -466,6 +707,10 @@ struct App {
     agent_filter: String,
     todo_filter: String,
     typing: bool,
+    /// The GitHub link being typed after `u`, and the last message about it.
+    link: Option<String>,
+    notice: Option<String>,
+    repo_dirs: Vec<PathBuf>,
 }
 
 impl App {
@@ -473,7 +718,7 @@ impl App {
         let config = config_path()
             .and_then(|p| fs::read_to_string(p).ok())
             .unwrap_or_default();
-        let dirs = todo_dirs(&config);
+        let dirs = config_dirs(&config, "todos");
         let mut todos = Vec::new();
         for dir in &dirs {
             scan(dir, dir, &mut todos);
@@ -492,6 +737,9 @@ impl App {
             agent_filter: String::new(),
             todo_filter: String::new(),
             typing: false,
+            link: None,
+            notice: None,
+            repo_dirs: config_dirs(&config, "repos"),
         };
         if app.agents.is_empty() {
             app.focus = Focus::Todos;
@@ -629,6 +877,26 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         if key.kind != KeyEventKind::Press {
             continue;
         }
+        if let Some(link) = app.link.as_mut() {
+            match key.code {
+                KeyCode::Char(c) => link.push(c),
+                KeyCode::Backspace => {
+                    link.pop();
+                }
+                KeyCode::Esc => app.link = None,
+                KeyCode::Enter => {
+                    let url = app.link.take().unwrap_or_default();
+                    app.notice = Some(format!("opening {}…", url.trim()));
+                    terminal.draw(|f| draw(f, &mut app))?;
+                    match open_link(&url, &app.repo_dirs) {
+                        Ok(()) => return Ok(()),
+                        Err(e) => app.notice = Some(e),
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
         // While typing a filter, printable keys go to it, so j/k/q can be searched.
         if app.typing {
             match key.code {
@@ -653,6 +921,10 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
             }
             KeyCode::Char('q') => return Ok(()),
             KeyCode::Char('/') => app.typing = true,
+            KeyCode::Char('u') => {
+                app.link = Some(String::new());
+                app.notice = None;
+            }
             KeyCode::Tab | KeyCode::BackTab => {
                 app.typing = false;
                 app.focus = match app.focus {
@@ -767,7 +1039,40 @@ fn draw(f: &mut Frame, app: &mut App) {
         Block::new().style(Style::new().bg(palette::BG).fg(palette::TEXT)),
         area,
     );
-    let body = area;
+    let bar = app.link.is_some() || app.notice.is_some();
+    let [bar_area, body] = Layout::vertical([
+        Constraint::Length(if bar { 2 } else { 0 }),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    if bar {
+        let line = match &app.link {
+            Some(link) => Line::from(vec![
+                Span::styled(
+                    " GitHub link ",
+                    Style::new().fg(palette::BG).bg(palette::ACCENT).bold(),
+                ),
+                Span::styled(format!(" {link}"), Style::new().fg(palette::TEXT)),
+                Span::styled("▏", Style::new().fg(palette::ACCENT)),
+                Span::styled(
+                    "   Enter open  Esc cancel",
+                    Style::new().fg(palette::SUBTEXT),
+                ),
+            ]),
+            None => Line::from(Span::styled(
+                format!(" {}", app.notice.as_deref().unwrap_or_default()),
+                Style::new().fg(palette::YELLOW),
+            )),
+        };
+        f.render_widget(
+            Paragraph::new(line).block(
+                Block::new()
+                    .borders(Borders::BOTTOM)
+                    .border_style(Style::new().fg(palette::LINE)),
+            ),
+            bar_area,
+        );
+    }
 
     // A phone-width client stacks the sections instead of splitting them.
     let [left, right] = if area.width < 80 {
@@ -1060,6 +1365,7 @@ fn draw_todos(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 const AGENT_KEYS: &[(&str, &str)] = &[
+    ("u", "open GitHub link"),
     ("/", "filter"),
     ("j/k ↑/↓", "move"),
     ("g/G", "top/bottom"),
@@ -1071,6 +1377,7 @@ const AGENT_KEYS: &[(&str, &str)] = &[
 ];
 
 const TODO_KEYS: &[(&str, &str)] = &[
+    ("u", "open GitHub link"),
     ("/", "filter"),
     ("j/k ↑/↓", "move"),
     ("g/G", "top/bottom"),
@@ -1198,6 +1505,9 @@ mod tests {
             agent_filter: String::new(),
             todo_filter: String::new(),
             typing: false,
+            link: None,
+            notice: None,
+            repo_dirs: vec![],
         };
         app.memory.used = HashMap::from([("c".into(), 200), ("b".into(), 100)]);
         let order: Vec<_> = app
@@ -1247,6 +1557,9 @@ mod tests {
             agent_filter: String::new(),
             todo_filter: String::new(),
             typing: false,
+            link: None,
+            notice: None,
+            repo_dirs: vec![],
         };
         let order = |app: &App| -> Vec<String> {
             app.visible_todos().iter().map(|t| t.text.clone()).collect()
@@ -1254,6 +1567,77 @@ mod tests {
         assert_eq!(order(&app), vec!["a", "c", "d", "b"]);
         app.memory.used = HashMap::from([("b".into(), 1)]);
         assert_eq!(order(&app), vec!["b", "a", "c", "d"]);
+    }
+
+    #[test]
+    fn parse_link_reads_issues_and_pull_requests() {
+        let link = |repo: &str, pull, number| {
+            Some(GithubLink {
+                repo: repo.into(),
+                pull,
+                number,
+            })
+        };
+        let p = parse_link;
+        assert_eq!(
+            p("https://github.com/Acme/Api/issues/874"),
+            link("acme/api", false, 874)
+        );
+        assert_eq!(
+            p(" github.com/acme/api/pull/12/files "),
+            link("acme/api", true, 12)
+        );
+        assert_eq!(
+            p("https://github.com/acme/api/issues/9#issuecomment-1"),
+            link("acme/api", false, 9)
+        );
+        assert_eq!(p("https://github.com/acme/api/tree/main"), None);
+        assert_eq!(p("https://gitlab.com/acme/api/issues/1"), None);
+    }
+
+    #[test]
+    fn remote_repo_handles_https_ssh_and_host_aliases() {
+        let r = remote_repo;
+        assert_eq!(
+            r("https://github.com/Acme/Api.git"),
+            Some("acme/api".into())
+        );
+        assert_eq!(r("git@github.com:acme/api.git"), Some("acme/api".into()));
+        assert_eq!(r("git@github.com-work:acme/api"), Some("acme/api".into()));
+        assert_eq!(
+            r("ssh://git@github.com/acme/api.git"),
+            Some("acme/api".into())
+        );
+        assert_eq!(r("git@gitlab.com:acme/api.git"), None);
+    }
+
+    #[test]
+    fn branch_name_is_number_plus_title_words_within_48_chars() {
+        assert_eq!(
+            branch_name(
+                874,
+                "Prove a customer can only see and change their own data"
+            ),
+            "issue-874-prove-a-customer-can-only-see-and"
+        );
+        assert_eq!(
+            branch_name(5, "Fix: login (SSO) — retry!"),
+            "issue-5-fix-login-sso-retry"
+        );
+        assert!(branch_name(1, &"word ".repeat(40)).len() <= 48);
+    }
+
+    #[test]
+    fn worktree_path_follows_herdr_layout() {
+        // SAFETY: tests in this crate do not read these variables concurrently.
+        unsafe {
+            std::env::set_var("HOME", "/home/u");
+            std::env::set_var("HERDR_CONFIG_PATH", "/nonexistent/config.toml");
+        }
+        assert_eq!(
+            worktree_path(Path::new("/src/api"), "feat/login"),
+            PathBuf::from("/home/u/.herdr/worktrees/api/feat-login")
+        );
     }
 
     #[test]
@@ -1279,6 +1663,9 @@ mod tests {
             agent_filter: String::new(),
             todo_filter: "dentist".into(),
             typing: true,
+            link: None,
+            notice: None,
+            repo_dirs: vec![],
         };
         assert!(!app.back_out());
         assert!(!app.typing);
@@ -1314,10 +1701,10 @@ mod tests {
         // SAFETY: tests in this crate do not read HOME concurrently.
         unsafe { std::env::set_var("HOME", "/home/u") };
         assert_eq!(
-            todo_dirs("[todos]\ndirs = [\"~/notes\", \"/srv/a~b\"]"),
+            config_dirs("[todos]\ndirs = [\"~/notes\", \"/srv/a~b\"]", "todos"),
             vec![PathBuf::from("/home/u/notes"), PathBuf::from("/srv/a~b")]
         );
-        assert!(todo_dirs("").is_empty());
+        assert!(config_dirs("", "todos").is_empty());
     }
 
     #[test]

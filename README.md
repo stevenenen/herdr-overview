@@ -40,6 +40,12 @@ in your notes.
   overview; your notes are never written to.
 - Links, cross-outs and focus times live in the plugin's state directory
   (`$HERDR_PLUGIN_STATE_DIR`). A `pane.focused` hook records when you last focused each pane.
+- **`u`** opens a GitHub issue or pull request link: paste it, press Enter. The overview finds
+  your clone of that repo, then opens a Herdr worktree for it and starts `claude "<link>"`:
+  - an issue gets a new branch `issue-<n>-<title words>` from the latest default branch;
+  - a pull request checks out its own branch.
+  The workspace and tab are labeled `#<n> <title>`. Pasting the same link again goes back to
+  that worktree. Needs `gh`, signed in to an account that can see the repo.
 - **`/`** filters the panel you are in, like Herdr Recent Navigator: type to narrow the list
   (every word must match), Esc stops typing and keeps the filter, Esc again clears it.
 - Each panel's footer lists every key it takes. On a narrow client, such as Herdr on a phone,
@@ -63,6 +69,13 @@ dirs = ["~/notes"]          # any folders of Markdown files, scanned recursively
 TOML
 ```
 
+For `u`, also list the folders that hold your git clones (each clone directly inside):
+
+```toml
+[repos]
+dirs = ["~/code"]
+```
+
 Any notes app that stores plain Markdown works: an Obsidian vault, a Logseq graph, a folder
 of `.md` files.
 
@@ -80,6 +93,7 @@ description = "Overview: agents and todos"
 
 | Key | Action |
 | --- | --- |
+| `u` | Open a GitHub issue or pull request link as a worktree |
 | `/` | Filter this panel; typed keys go to the filter |
 | `j` / `k`, `↑` / `↓` | Move |
 | `g` / `G`, `Home` / `End` | Top / bottom |
