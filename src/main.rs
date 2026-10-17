@@ -325,8 +325,6 @@ fn config_dirs(config: &str, section: &str) -> Vec<PathBuf> {
 struct Memory {
     tabs: HashMap<String, String>,
     crossed: Vec<String>,
-    /// When each todo's Claude tab was last opened, so recent ones sort first.
-    used: HashMap<String, u64>,
     /// The todo group last opened with h/l, by name; empty means all.
     group: String,
 }
@@ -351,16 +349,9 @@ impl Memory {
             .flatten()
             .filter_map(|v| Some(v.as_str()?.to_string()))
             .collect();
-        let used = v["used"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .filter_map(|(k, v)| Some((k.clone(), v.as_u64()?)))
-            .collect();
         Memory {
             tabs,
             crossed,
-            used,
             group: v["group"].as_str().unwrap_or_default().to_string(),
         }
     }
@@ -375,13 +366,9 @@ impl Memory {
 
     fn save(&self) {
         if let Some(p) = Self::path() {
-            let v = serde_json::json!({ "tabs": self.tabs, "crossed": self.crossed, "used": self.used, "group": self.group });
+            let v = serde_json::json!({ "tabs": self.tabs, "crossed": self.crossed, "group": self.group });
             let _ = fs::write(p, v.to_string());
         }
-    }
-
-    fn touch(&mut self, text: &str) {
-        self.used.insert(text.to_string(), now_millis());
     }
 
     /// Crossing out only marks the todo; it keeps its place in the list.
@@ -405,8 +392,6 @@ fn open_todo(memory: &mut Memory, todo: &Todo) {
     if let Some(tab) = memory.tabs.get(&todo.text)
         && herdr(&["tab", "focus", tab]).is_some()
     {
-        memory.touch(&todo.text);
-        memory.save();
         return;
     }
     let label: String = todo.text.chars().take(30).collect();
@@ -428,7 +413,6 @@ fn open_todo(memory: &mut Memory, todo: &Todo) {
         ])
         .output();
     memory.tabs.insert(todo.text.clone(), tab.to_string());
-    memory.touch(&todo.text);
     memory.save();
 }
 
@@ -891,31 +875,16 @@ impl App {
             .collect()
     }
 
-    /// Grouped by topic. The topic used most recently comes first, then the biggest; inside a
-    /// topic the todo whose Claude tab was opened most recently leads and the rest keep their note order.
+    /// Grouped by area and topic, by name, each topic in note order. Nothing you press moves a todo.
     fn visible_todos(&self) -> Vec<&Todo> {
-        let used = |t: &Todo| self.memory.used.get(&t.text).copied().unwrap_or(0);
-        let list: Vec<&Todo> = self
+        let mut list: Vec<&Todo> = self
             .todos
             .iter()
             .filter(|t| self.group == 0 || t.group == self.groups[self.group - 1].0)
             .filter(|t| matches(&self.todo_filter, &[&t.text, &t.group, &t.topic]))
             .collect();
-        let mut topics: HashMap<(&str, &str), (u64, usize)> = HashMap::new();
-        for t in &list {
-            let e = topics.entry((&t.group, &t.topic)).or_default();
-            e.0 = e.0.max(used(t));
-            e.1 += 1;
-        }
-        let mut list = list;
-        list.sort_by_key(|t| {
-            let (last, size) = topics[&(t.group.as_str(), t.topic.as_str())];
-            (
-                std::cmp::Reverse(last),
-                std::cmp::Reverse(size),
-                (t.group.clone(), t.topic.clone()),
-                std::cmp::Reverse(used(t)),
-            )
+        list.sort_by(|a, b| {
+            (&a.group, &a.topic, &a.file, a.line).cmp(&(&b.group, &b.topic, &b.file, b.line))
         });
         list
     }
@@ -1651,7 +1620,6 @@ mod tests {
         m.toggle_crossed("Done");
         m.toggle_crossed("New");
         assert_eq!(m.crossed, vec!["New"]);
-        assert!(m.used.is_empty(), "crossing out must not move a todo");
     }
 
     #[test]
@@ -1673,42 +1641,6 @@ mod tests {
     }
 
     #[test]
-    fn todos_sort_most_recently_used_first() {
-        let todo = |t: &str| Todo {
-            group: "g".into(),
-            topic: "x".into(),
-            text: t.into(),
-            ..Todo::default()
-        };
-        let mut app = App {
-            agents: vec![],
-            todos: vec![todo("a"), todo("b"), todo("c")],
-            groups: vec![],
-            group: 0,
-            focus: Focus::Todos,
-            agent_list: ListState::default(),
-            todo_list: ListState::default(),
-            todo_offset: 0,
-            configured: true,
-            memory: Memory::default(),
-            agent_filter: String::new(),
-            todo_filter: String::new(),
-            typing: false,
-            link: None,
-            notice: None,
-            repo_dirs: vec![],
-            adding: None,
-        };
-        app.memory.used = HashMap::from([("c".into(), 200), ("b".into(), 100)]);
-        let order: Vec<_> = app
-            .visible_todos()
-            .iter()
-            .map(|t| t.text.as_str())
-            .collect();
-        assert_eq!(order, vec!["c", "b", "a"]);
-    }
-
-    #[test]
     fn place_takes_area_from_top_folder_and_topic_from_the_next_level() {
         let p = |s: &str, tag: &str| place(Path::new(s), tag);
         let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
@@ -1722,20 +1654,20 @@ mod tests {
     }
 
     #[test]
-    fn todos_group_by_topic_most_recent_topic_first() {
-        let todo = |topic: &str, t: &str| Todo {
+    fn todos_keep_their_place_whatever_you_press() {
+        let todo = |topic: &str, t: &str, line| Todo {
             group: "g".into(),
             topic: topic.into(),
             text: t.into(),
+            line,
             ..Todo::default()
         };
         let mut app = App {
             agents: vec![],
             todos: vec![
-                todo("big", "a"),
-                todo("small", "b"),
-                todo("big", "c"),
-                todo("big", "d"),
+                todo("b", "late", 9),
+                todo("a", "x", 1),
+                todo("b", "early", 2),
             ],
             groups: vec![],
             group: 0,
@@ -1756,9 +1688,10 @@ mod tests {
         let order = |app: &App| -> Vec<String> {
             app.visible_todos().iter().map(|t| t.text.clone()).collect()
         };
-        assert_eq!(order(&app), vec!["a", "c", "d", "b"]);
-        app.memory.used = HashMap::from([("b".into(), 1)]);
-        assert_eq!(order(&app), vec!["b", "a", "c", "d"]);
+        assert_eq!(order(&app), vec!["x", "early", "late"]);
+        app.memory.tabs.insert("late".into(), "w1:t1".into());
+        app.memory.toggle_crossed("late");
+        assert_eq!(order(&app), vec!["x", "early", "late"]);
     }
 
     #[test]
