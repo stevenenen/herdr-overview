@@ -1467,19 +1467,16 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
         top.push(Span::raw(" ".repeat(area.width as usize - used)));
         top.extend(legend);
     }
-    // Index, icon, then tab, workspace and title columns.
-    // Each column keeps a two-space gap after it, so a full one never runs into the next.
-    let rest = (area.width as usize).saturating_sub(6 + 4);
-    let (tab_w, ws_w) = (rest * 4 / 10, rest * 25 / 100);
-    let title_w = rest - ws_w - tab_w;
+    // Index, icon, then tab and workspace columns, with a two-space gap between them.
+    let rest = (area.width as usize).saturating_sub(6 + 2);
+    let tab_w = rest * 6 / 10;
+    let ws_w = rest - tab_w;
     let gap = || Span::raw("  ");
     let columns = Line::from(vec![
         Span::raw("      "),
         header(&fit("Tab", tab_w)),
         gap(),
         header(&fit("Workspace", ws_w)),
-        gap(),
-        header(&fit("Title", title_w)),
     ]);
     let agents = app.visible_agents();
     let typing = app.typing && app.focus == Focus::Agents;
@@ -1505,8 +1502,6 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled(fit(&a.tab, tab_w), Style::new().fg(palette::TEXT).bold()),
                 gap(),
                 Span::styled(fit(&a.workspace, ws_w), Style::new().fg(palette::TEXT)),
-                gap(),
-                Span::styled(fit(&a.title, title_w), Style::new().fg(palette::SUBTEXT)),
             ]))
         })
         .collect();

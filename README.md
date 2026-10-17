@@ -9,10 +9,10 @@ refresh every 2 seconds without moving your selection.
 ──────────────────────────────────────────────────────────────────────
  > / to filter                                                      6
 ──────────────────────────────────────────────────────────────────────
-      Tab                       Workspace         Title
- 1. × Fix login test            api               Claude Code
- 2. ✓ Update README             web               Docs pass
- 3. ◐ main                      api               Claude Code
+      Tab                       Workspace
+ 1. × Fix login test            api
+ 2. ✓ Update README             web
+ 3. ◐ main                      api
 ──────────────────────────────────────────────────────────────────────
   u open GitHub link  / filter  j/k ↑/↓ move  Enter go to agent  …
  Todo   ☐ 24
