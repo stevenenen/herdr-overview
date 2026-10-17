@@ -416,6 +416,54 @@ fn open_todo(memory: &mut Memory, todo: &Todo) {
     memory.save();
 }
 
+/// The main clone a todo's topic names: `agentic-development` finds
+/// `acme-agentic-development`. Whole hyphenated words only; the shortest name wins.
+fn topic_repo(dirs: &[PathBuf], topic: &str) -> Option<PathBuf> {
+    let topic = slug("", topic);
+    let topic = topic.trim_start_matches('-');
+    if topic.is_empty() {
+        return None;
+    }
+    dirs.iter()
+        .filter_map(|d| fs::read_dir(d).ok())
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join(".git").is_dir())
+        .filter(|p| {
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+            format!("-{name}-").contains(&format!("-{topic}-"))
+        })
+        .min_by_key(|p| p.as_os_str().len())
+}
+
+/// Enter on a todo, by context: a GitHub link in it opens that issue's worktree, a topic
+/// named after a repo opens a worktree there, anything else gets a Claude tab.
+fn work_on(memory: &mut Memory, todo: &Todo, repo_dirs: &[PathBuf]) -> Result<(), String> {
+    let link = todo
+        .text
+        .split(|c: char| c.is_whitespace() || "()<>[]".contains(c))
+        .find(|w| parse_link(w).is_some());
+    if let Some(link) = link {
+        return open_link(link, repo_dirs);
+    }
+    match topic_repo(repo_dirs, &todo.topic) {
+        Some(clone) => {
+            let branch = slug("todo", &todo.text);
+            let base = default_base(&clone);
+            open_worktree(&clone, &branch, Some(&base), &todo.text, &todo.text)
+        }
+        None => {
+            open_todo(memory, todo);
+            Ok(())
+        }
+    }
+}
+
 /// An issue or pull request link: `https://github.com/<owner>/<repo>/(issues|pull)/<n>...`.
 #[derive(Debug, PartialEq)]
 struct GithubLink {
@@ -492,7 +540,12 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
 
 /// `issue-874-prove-a-customer-can-only-see`: the number plus the title's first words.
 fn branch_name(number: u64, title: &str) -> String {
-    let mut name = format!("issue-{number}");
+    slug(&format!("issue-{number}"), title)
+}
+
+/// `prefix` plus the first words of `title`, lowercase and hyphenated, within 48 chars.
+fn slug(prefix: &str, title: &str) -> String {
+    let mut name = prefix.to_string();
     let lower = title.to_lowercase();
     for word in lower
         .split(|c: char| !c.is_ascii_alphanumeric())
@@ -596,25 +649,7 @@ fn open_link(url: &str, repo_dirs: &[PathBuf]) -> Result<(), String> {
         Some(head) => head.to_string(),
         None => branch_name(link.number, title),
     };
-    let label: String = format!("#{} {title}", link.number)
-        .chars()
-        .take(40)
-        .collect();
-    let cwd = clone.to_string_lossy().to_string();
-    let (flag, value) = match source_workspace(&clone) {
-        Some(id) => ("--workspace", id),
-        None => ("--cwd", cwd),
-    };
-    let source = [flag, value.as_str()];
-
-    let path = worktree_path(&clone, &branch);
-    if path.exists() {
-        let path = path.to_string_lossy();
-        let reopen = [
-            "worktree", "open", source[0], source[1], "--path", &path, "--label", &label, "--focus",
-        ];
-        return herdr_result(&reopen).map(|_| ());
-    }
+    let label = format!("#{} {title}", link.number);
     let base = if link.pull {
         git(
             &clone,
@@ -622,22 +657,55 @@ fn open_link(url: &str, repo_dirs: &[PathBuf]) -> Result<(), String> {
         );
         None
     } else {
-        let base = git(
-            &clone,
-            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-        )
-        .unwrap_or_else(|| "origin/main".into());
-        git(
-            &clone,
-            &["fetch", "origin", base.trim_start_matches("origin/")],
-        );
-        Some(base)
+        Some(default_base(&clone))
     };
+    open_worktree(&clone, &branch, base.as_deref(), &label, url.trim())
+}
+
+/// The remote's default branch, freshly fetched: `origin/main`.
+fn default_base(clone: &Path) -> String {
+    let base = git(
+        clone,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    )
+    .unwrap_or_else(|| "origin/main".into());
+    git(
+        clone,
+        &["fetch", "origin", base.trim_start_matches("origin/")],
+    );
+    base
+}
+
+/// Opens `branch` as a worktree of `clone` with Claude started on `prompt`, or reopens it
+/// when that worktree already exists.
+fn open_worktree(
+    clone: &Path,
+    branch: &str,
+    base: Option<&str>,
+    label: &str,
+    prompt: &str,
+) -> Result<(), String> {
+    let label: String = label.chars().take(40).collect();
+    let cwd = clone.to_string_lossy().to_string();
+    let (flag, value) = match source_workspace(clone) {
+        Some(id) => ("--workspace", id),
+        None => ("--cwd", cwd),
+    };
+    let source = [flag, value.as_str()];
+
+    let path = worktree_path(clone, branch);
+    if path.exists() {
+        let path = path.to_string_lossy();
+        let reopen = [
+            "worktree", "open", source[0], source[1], "--path", &path, "--label", &label, "--focus",
+        ];
+        return herdr_result(&reopen).map(|_| ());
+    }
     let mut args = vec![
-        "worktree", "create", source[0], source[1], "--branch", &branch, "--label", &label,
+        "worktree", "create", source[0], source[1], "--branch", branch, "--label", &label,
         "--focus",
     ];
-    if let Some(base) = &base {
+    if let Some(base) = base {
         args.extend(["--base", base]);
     }
     let created = herdr_result(&args)?;
@@ -650,7 +718,7 @@ fn open_link(url: &str, repo_dirs: &[PathBuf]) -> Result<(), String> {
                 "pane",
                 "run",
                 pane,
-                &format!("claude {}", shell_quote(url.trim())),
+                &format!("claude {}", shell_quote(prompt)),
             ])
             .output();
     }
@@ -1143,8 +1211,17 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
                 }
             }
             KeyCode::Enter => {
-                if let Some(todo) = app.selected_todo() {
-                    let todo = todo.clone();
+                if let Some(todo) = app.selected_todo().cloned() {
+                    app.notice = Some(format!("opening {}…", todo.text));
+                    terminal.draw(|f| draw(f, &mut app))?;
+                    match work_on(&mut app.memory, &todo, &app.repo_dirs) {
+                        Ok(()) => return Ok(()),
+                        Err(e) => app.notice = Some(e),
+                    }
+                }
+            }
+            KeyCode::Char('t') if app.focus == Focus::Todos => {
+                if let Some(todo) = app.selected_todo().cloned() {
                     open_todo(&mut app.memory, &todo);
                     return Ok(());
                 }
@@ -1561,7 +1638,8 @@ const TODO_KEYS: &[(&str, &str)] = &[
     ("j/k ↑/↓", "move"),
     ("g/G", "top/bottom"),
     ("h/l ←/→", "group"),
-    ("Enter", "Claude tab"),
+    ("Enter", "work on it"),
+    ("t", "Claude tab"),
     ("Space", "cross out"),
     ("o", "open note"),
     ("a", "add todo below"),
@@ -1805,6 +1883,36 @@ mod tests {
             Some("acme/api".into())
         );
         assert_eq!(r("git@gitlab.com:acme/api.git"), None);
+    }
+
+    #[test]
+    fn topic_repo_matches_whole_words_of_main_clones() {
+        let root = std::env::temp_dir().join(format!("overview-test-{}", std::process::id()));
+        for (name, main) in [
+            ("acme-agentic-development", true),
+            ("acme-billing-engine", true),
+            ("ce-1", false),
+        ] {
+            let dir = root.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            if main {
+                fs::create_dir_all(dir.join(".git")).unwrap();
+            } else {
+                fs::write(dir.join(".git"), "gitdir: x").unwrap();
+            }
+        }
+        let dirs = [root.clone()];
+        let name =
+            |t| topic_repo(&dirs, t).map(|p| p.file_name().unwrap().to_string_lossy().into_owned());
+        assert_eq!(
+            name("agentic-development").as_deref(),
+            Some("acme-agentic-development")
+        );
+        assert_eq!(name("Billing").as_deref(), Some("acme-billing-engine"));
+        assert_eq!(name("ce-1"), None);
+        assert_eq!(name("development agentic"), None);
+        assert_eq!(name("Passport"), None);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

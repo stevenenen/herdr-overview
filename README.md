@@ -40,9 +40,14 @@ refresh every 2 seconds without moving your selection.
   - the **topic** (a `▸` header in the list) is the folder or note one level down:
     `Work/Launch/plan.md` is topic `Launch`. A `TODO.md` right in an area folder is `inbox`.
 - Areas and topics are listed by name, each topic in note order. Nothing you press moves a todo.
-- **Enter on a todo** opens a new tab running `claude "<todo>"` and remembers the link (`↗`).
-  Enter again goes back to that tab instead of starting another; if the tab was closed, a
-  new one opens.
+- **Enter on a todo** picks where to work on it:
+  - a GitHub issue or pull request link in the todo opens that worktree, like `u`;
+  - a topic named after a repo in `[repos] dirs` (`agentic-development` finds
+    `acme-agentic-development`) opens a worktree there on branch `todo-<words>`, Claude
+    started on the todo. Enter again reopens it;
+  - anything else gets a Claude tab, as `t` does.
+- **`t` on a todo** opens a new tab running `claude "<todo>"` and remembers the link (`↗`).
+  `t` again goes back to that tab; if the tab was closed, a new one opens.
 - **Space** crosses a todo out (`☒`), Space again undoes it. This only marks it in the
   overview; the note is left alone.
 - **`o`** opens the todo's note where it lives. A note inside an Obsidian vault (one Obsidian
@@ -113,7 +118,8 @@ description = "Overview: agents and todos"
 | `Tab` | Switch between agents and todos |
 | `h` / `l`, `←` / `→` | Previous / next todo group (Todo panel); the overview reopens on it |
 | `Enter` on an agent | Jump to it |
-| `Enter` on a todo | Open or return to its Claude tab |
+| `Enter` on a todo | Its issue worktree, its repo's worktree, or else its Claude tab |
+| `t` on a todo | Open or return to its Claude tab |
 | `Space` on a todo | Cross out / undo |
 | `o` on a todo | Open its note: in Obsidian when it is in a vault, else in your editor |
 | `a` on a todo | Add a todo below it, in the same note |
