@@ -325,7 +325,7 @@ fn config_dirs(config: &str, section: &str) -> Vec<PathBuf> {
 struct Memory {
     tabs: HashMap<String, String>,
     crossed: Vec<String>,
-    /// When each todo was last opened or crossed, so recent ones sort first.
+    /// When each todo's Claude tab was last opened, so recent ones sort first.
     used: HashMap<String, u64>,
 }
 
@@ -381,8 +381,8 @@ impl Memory {
         self.used.insert(text.to_string(), now_millis());
     }
 
+    /// Crossing out only marks the todo; it keeps its place in the list.
     fn toggle_crossed(&mut self, text: &str) {
-        self.touch(text);
         match self.crossed.iter().position(|t| t == text) {
             Some(i) => {
                 self.crossed.remove(i);
@@ -884,7 +884,7 @@ impl App {
     }
 
     /// Grouped by topic. The topic used most recently comes first, then the biggest; inside a
-    /// topic the most recently opened or crossed todo leads and the rest keep their note order.
+    /// topic the todo whose Claude tab was opened most recently leads and the rest keep their note order.
     fn visible_todos(&self) -> Vec<&Todo> {
         let used = |t: &Todo| self.memory.used.get(&t.text).copied().unwrap_or(0);
         let list: Vec<&Todo> = self
@@ -1140,8 +1140,6 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
                 if let Some(text) = app.selected_todo().map(|t| t.text.clone()) {
                     app.memory.toggle_crossed(&text);
                     app.memory.save();
-                    // It just moved to the top; keep it selected.
-                    app.todo_list.select(Some(0));
                 }
             }
             _ => {}
@@ -1638,6 +1636,7 @@ mod tests {
         m.toggle_crossed("Done");
         m.toggle_crossed("New");
         assert_eq!(m.crossed, vec!["New"]);
+        assert!(m.used.is_empty(), "crossing out must not move a todo");
     }
 
     #[test]

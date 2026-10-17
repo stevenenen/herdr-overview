@@ -39,7 +39,7 @@ in your notes.
   - the **topic** (a `▸` header in the list) is the folder or note one level down:
     `Work/Launch/plan.md` is topic `Launch`. A `TODO.md` right in an area folder is `inbox`.
 - The topic you used most recently comes first, then the biggest. Inside a topic the todo you
-  opened or crossed most recently leads.
+  opened with Enter most recently leads. Crossing out never moves a todo.
 - **Enter on a todo** opens a new tab running `claude "<todo>"` and remembers the link (`↗`).
   Enter again goes back to that tab instead of starting another; if the tab was closed, a
   new one opens.
