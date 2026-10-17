@@ -4,21 +4,28 @@ One popup for a [Herdr](https://herdr.dev) session: which agents need you, and e
 in your notes.
 
 ```
- Agents   × 1  ✓ 2  ◐ 1  ○ 2             │ Todo   ☐ 24
-─────────────────────────────────────────│─────────────────────────────────
- > / to filter                        6  │ > pass▏                     1/24
-─────────────────────────────────────────│─────────────────────────────────
-      Tab         Workspace Title        │   all    24
- 1. × api         auth      Fix login t… │   work  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰ 14
- 2. ✓ web         docs      Update READ… │   home  ▰▰▰▰▰▰▰ 7
- 3. ✓ web         main      Claude Code  │   other ▰▰ 3
- 4. ◐ api         main      Claude Code  │
- 5. ○ cli         main      Claude Code  │        Todo                Group
- 6. ○ cli         release   Claude Code  │ 1. ☐ ↗ Renew the passport  home
-                                         │ 2. ☒   Review the notes    work
-─────────────────────────────────────────│─────────────────────────────────
-  j/k ↑/↓ move  g/G top/bottom           │  j/k ↑/↓ move  h/l ←/→ group
-  Enter go to agent  Tab to todos  …     │  Enter Claude tab  Space cross out  …
+ Agents   × 1  ✓ 2  ◐ 1  ○ 2
+──────────────────────────────────────────────────────────────────────
+ > / to filter                                                      6
+──────────────────────────────────────────────────────────────────────
+      Tab                       Workspace         Title
+ 1. × Fix login test            api               Claude Code
+ 2. ✓ Update README             web               Docs pass
+ 3. ◐ main                      api               Claude Code
+──────────────────────────────────────────────────────────────────────
+  u open GitHub link  / filter  j/k ↑/↓ move  Enter go to agent  …
+ Todo   ☐ 24
+──────────────────────────────────────────────────────────────────────
+ > pass▏                                                         1/24
+──────────────────────────────────────────────────────────────────────
+   all    24
+   work  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ 14
+   home  ▰▰▰▰▰▰▰▰▰▰▰▰▰ 7
+
+ ▸ Passport  home  1
+ 1. ☐ ↗ Renew the passport
+──────────────────────────────────────────────────────────────────────
+  u open GitHub link  / filter  h/l ←/→ group  Enter Claude tab  …
 ```
 
 - **Agents** are sorted most recently focused first; agents you have not focused yet follow,
@@ -48,8 +55,8 @@ in your notes.
   that worktree. Needs `gh`, signed in to an account that can see the repo.
 - **`/`** filters the panel you are in, like Herdr Recent Navigator: type to narrow the list
   (every word must match), Esc stops typing and keeps the filter, Esc again clears it.
-- Each panel's footer lists every key it takes. On a narrow client, such as Herdr on a phone,
-  the two panels stack.
+- Agents sit on top and todos below, both full width. Each panel's footer lists every key
+  it takes.
 
 ## Install
 

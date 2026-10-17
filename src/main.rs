@@ -1074,25 +1074,9 @@ fn draw(f: &mut Frame, app: &mut App) {
         );
     }
 
-    // A phone-width client stacks the sections instead of splitting them.
-    let [left, right] = if area.width < 80 {
-        let h = (app.agents.len() as u16 + 4).min(body.height / 2);
-        Layout::vertical([Constraint::Length(h), Constraint::Fill(1)]).areas(body)
-    } else {
-        let [l, divider, r] = Layout::horizontal([
-            Constraint::Percentage(50),
-            Constraint::Length(1),
-            Constraint::Fill(1),
-        ])
-        .areas(body);
-        f.render_widget(
-            Block::new()
-                .borders(Borders::LEFT)
-                .border_style(Style::new().fg(palette::LINE)),
-            divider,
-        );
-        [l, r]
-    };
+    // Agents on top, todos below, both full width so tab and title have room.
+    let h = (app.agents.len() as u16 + 7).min(body.height / 2);
+    let [left, right] = Layout::vertical([Constraint::Length(h), Constraint::Fill(1)]).areas(body);
     let [left, left_keys] = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(hint_lines(AGENT_KEYS, left.width).len() as u16 + 1),
@@ -1188,13 +1172,17 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
         }
     }
     // Index, icon, then tab, workspace and title columns.
-    let rest = (area.width as usize).saturating_sub(6);
-    let (ws_w, tab_w) = (rest * 3 / 10, rest * 3 / 10);
+    // Each column keeps a two-space gap after it, so a full one never runs into the next.
+    let rest = (area.width as usize).saturating_sub(6 + 4);
+    let (tab_w, ws_w) = (rest * 4 / 10, rest * 25 / 100);
     let title_w = rest - ws_w - tab_w;
+    let gap = || Span::raw("  ");
     let columns = Line::from(vec![
         Span::raw("      "),
         header(&fit("Tab", tab_w)),
+        gap(),
         header(&fit("Workspace", ws_w)),
+        gap(),
         header(&fit("Title", title_w)),
     ]);
     let agents = app.visible_agents();
@@ -1219,7 +1207,9 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
                     Style::new().fg(a.status.color()),
                 ),
                 Span::styled(fit(&a.tab, tab_w), Style::new().fg(palette::TEXT).bold()),
+                gap(),
                 Span::styled(fit(&a.workspace, ws_w), Style::new().fg(palette::TEXT)),
+                gap(),
                 Span::styled(fit(&a.title, title_w), Style::new().fg(palette::SUBTEXT)),
             ]))
         })
