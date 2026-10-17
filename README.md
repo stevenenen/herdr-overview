@@ -60,7 +60,7 @@ refresh every 2 seconds without moving your selection.
 - Links, cross-outs and focus times live in the plugin's state directory
   (`$HERDR_PLUGIN_STATE_DIR`). A `pane.focused` hook records when you last focused each pane.
 - **`u`** opens a GitHub issue or pull request link: paste it, press Enter. The overview finds
-  your clone of that repo, then opens a Herdr worktree for it and starts `claude "<link>"`:
+  your clone of that repo (cloning it into the first `[repos] dirs` folder when there is none), then opens a Herdr worktree for it and starts `claude "<link>"`:
   - an issue gets a new branch `issue-<n>-<title words>` from the latest default branch;
   - a pull request checks out its own branch.
   The workspace and tab are labeled `#<n> <title>`. Pasting the same link again goes back to

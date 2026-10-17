@@ -534,6 +534,30 @@ fn find_clone(dirs: &[PathBuf], repo: &str) -> Option<PathBuf> {
         })
 }
 
+/// Clones `repo` into `<dir>/<repo name>` with `gh`, for a link to a repo not cloned yet.
+fn clone_repo(dir: &Path, repo: &str) -> Result<PathBuf, String> {
+    let target = dir.join(repo.rsplit('/').next().unwrap_or(repo));
+    if target.exists() {
+        return Err(format!(
+            "{} exists but is not a clone of {repo}",
+            target.display()
+        ));
+    }
+    let out = Command::new("gh")
+        .args(["repo", "clone", repo])
+        .arg(&target)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| format!("gh: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "gh repo clone: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(target)
+}
+
 /// Runs git in `dir`. Credential prompts are off: they would draw over the popup.
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
@@ -640,8 +664,10 @@ fn open_link(url: &str, repo_dirs: &[PathBuf]) -> Result<(), String> {
                 .unwrap_or_default()
         ));
     }
-    let clone = find_clone(repo_dirs, &link.repo)
-        .ok_or_else(|| format!("no clone of {} in [repos] dirs", link.repo))?;
+    let clone = match find_clone(repo_dirs, &link.repo) {
+        Some(clone) => clone,
+        None => clone_repo(&repo_dirs[0], &link.repo)?,
+    };
     let (kind, fields) = if link.pull {
         ("pr", "title,headRefName")
     } else {
