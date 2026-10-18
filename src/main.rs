@@ -3,10 +3,32 @@
 use std::{
     collections::HashMap,
     fs,
+    io::{BufRead, BufReader, Write},
+    os::unix::net::UnixStream,
     path::{Path, PathBuf},
     process::Command,
+    sync::Arc,
+    thread,
     time::{Duration, Instant},
 };
+
+/// Perf-profiling log, off by default. Enable with `HERDR_OVERVIEW_TIMING=<path>` pointing at
+/// a writable file; every `App::load()` phase then appends its duration there. Kept in the
+/// source (rather than deleted after use) so the next optimization pass can just set the env
+/// var again instead of re-instrumenting from scratch.
+fn timing_log() -> Option<String> {
+    std::env::var("HERDR_OVERVIEW_TIMING")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+fn log_timing(label: &str, since: Instant) {
+    let Some(path) = timing_log() else { return };
+    let ms = since.elapsed().as_millis();
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{label}: {ms}ms");
+    }
+}
 
 use ratatui::{
     DefaultTerminal, Frame,
@@ -122,6 +144,26 @@ fn herdr(args: &[&str]) -> Option<Value> {
     value.get("result").cloned()
 }
 
+/// A direct call to Herdr's local JSON socket (newline-delimited JSON, one line in, one line
+/// out — see herdr.dev's Socket API docs), instead of spawning the `herdr` CLI binary. The CLI
+/// itself just talks to this same socket, but its own process-spawn floor (~15-25ms, measured)
+/// dwarfs the actual round trip (~0ms, measured) once we're already a running process. Herdr
+/// injects `HERDR_SOCKET_PATH` into plugin processes, so this needs no extra config; falls
+/// back to the CLI when the socket isn't reachable (e.g. run outside a plugin context).
+fn socket_call(method: &str) -> Option<Value> {
+    let path = std::env::var("HERDR_SOCKET_PATH")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    let mut stream = UnixStream::connect(path).ok()?;
+    let request = serde_json::json!({ "id": "herdr-overview", "method": method, "params": {} });
+    writeln!(stream, "{request}").ok()?;
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).ok()?;
+    let value: Value = serde_json::from_str(&line).ok()?;
+    value.get("result").cloned()
+}
+
 fn labels(result: Option<Value>, list: &str, id: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for item in result
@@ -213,12 +255,23 @@ fn track_focus() {
     }
 }
 
+/// `herdr api snapshot` returns agents, workspaces and tabs together, in one process spawn —
+/// cheaper than the three separate `workspace/tab/agent list` calls this used to make even run
+/// concurrently, since each spawn still pays its own ~10ms floor and concurrent calls were
+/// additionally contending for the same server socket (measured ~16-17ms for 3 at once vs
+/// ~18ms for this single, bigger call).
 fn load_agents() -> Vec<Agent> {
-    let workspaces = labels(herdr(&["workspace", "list"]), "workspaces", "workspace_id");
-    let tabs = labels(herdr(&["tab", "list"]), "tabs", "tab_id");
+    let t = Instant::now();
+    let snapshot = socket_call("session.snapshot")
+        .or_else(|| herdr(&["api", "snapshot"]))
+        .and_then(|v| v.get("snapshot").cloned());
+    log_timing("  agents.snapshot_call", t);
+    let workspaces = labels(snapshot.clone(), "workspaces", "workspace_id");
+    let tabs = labels(snapshot.clone(), "tabs", "tab_id");
     let focused = load_focus();
-    herdr(&["agent", "list"])
-        .map(|a| parse_agents(&a, &workspaces, &tabs, &focused))
+    snapshot
+        .as_ref()
+        .map(|s| parse_agents(s, &workspaces, &tabs, &focused))
         .unwrap_or_default()
 }
 
@@ -281,7 +334,10 @@ fn place(relative: &Path, tag: &str) -> (String, String) {
     }
 }
 
-fn scan(root: &Path, dir: &Path, todos: &mut Vec<Todo>) {
+/// Lists every `.md` path under `dir` (skipping dot-directories). Directory listing alone is
+/// cheap — measured ~5ms for 790 files — so this stays single-threaded; it's reading file
+/// *content* that costs (measured ~35ms for the same 790), which `scan_parallel` parallelizes.
+fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -291,18 +347,174 @@ fn scan(root: &Path, dir: &Path, todos: &mut Vec<Todo>) {
             continue;
         }
         if path.is_dir() {
-            scan(root, &path, todos);
-        } else if path.extension().is_some_and(|e| e == "md")
-            && let Ok(text) = fs::read_to_string(&path)
-        {
-            let relative = path.strip_prefix(root).unwrap_or(&path);
-            todos.extend(parse_file(&text).into_iter().map(|mut t| {
-                (t.group, t.topic) = place(relative, &t.group);
-                t.file = path.clone();
-                t
-            }));
+            collect_md_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "md") {
+            out.push(path);
         }
     }
+}
+
+fn mtime_millis(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as u64)
+}
+
+/// Per-file cache of parsed todos, keyed by path and invalidated by mtime, in
+/// `$HERDR_PLUGIN_STATE_DIR/todo_cache.json`. The vault's notes rarely change between opens,
+/// but iCloud's per-file content-read latency is what makes `scan` variable (measured 14-50ms
+/// across runs, vs. a steady ~5ms just to list paths and stat mtimes) — so on a repeat open
+/// with nothing changed, this skips reading file content entirely and only pays the stat cost.
+#[derive(Default)]
+struct TodoCache {
+    entries: HashMap<String, (u64, Vec<Todo>)>,
+}
+
+impl TodoCache {
+    fn path() -> Option<PathBuf> {
+        std::env::var("HERDR_PLUGIN_STATE_DIR")
+            .ok()
+            .map(|d| PathBuf::from(d).join("todo_cache.json"))
+    }
+
+    fn load() -> Self {
+        let Some(bytes) = Self::path().and_then(|p| fs::read(p).ok()) else {
+            return Self::default();
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+            return Self::default();
+        };
+        let mut entries = HashMap::new();
+        for (path, entry) in value.as_object().into_iter().flatten() {
+            let Some(mtime) = entry["mtime"].as_u64() else {
+                continue;
+            };
+            let todos: Vec<Todo> = entry["todos"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|t| {
+                    Some(Todo {
+                        group: t["group"].as_str()?.to_string(),
+                        topic: t["topic"].as_str()?.to_string(),
+                        text: t["text"].as_str()?.to_string(),
+                        file: PathBuf::from(path),
+                        line: t["line"].as_u64()? as usize,
+                    })
+                })
+                .collect();
+            entries.insert(path.clone(), (mtime, todos));
+        }
+        TodoCache { entries }
+    }
+
+    fn save(&self) {
+        let Some(path) = Self::path() else { return };
+        let map: serde_json::Map<String, Value> = self
+            .entries
+            .iter()
+            .map(|(key, (mtime, todos))| {
+                let todos: Vec<Value> = todos
+                    .iter()
+                    .map(|t| {
+                        serde_json::json!({
+                            "group": t.group, "topic": t.topic, "text": t.text, "line": t.line,
+                        })
+                    })
+                    .collect();
+                (key.clone(), serde_json::json!({ "mtime": mtime, "todos": todos }))
+            })
+            .collect();
+        let _ = fs::write(path, Value::Object(map).to_string());
+    }
+}
+
+/// Reads and parses one file not found unchanged in the cache, tagged against `root` for
+/// `place()`'s area/topic. Returns the cache key and this file's todos alongside its mtime, so
+/// the caller can fold it back into the cache.
+fn parse_file_fresh(root: &Path, path: &Path) -> Option<(String, u64, Vec<Todo>)> {
+    let text = fs::read_to_string(path).ok()?;
+    let mtime = mtime_millis(path).unwrap_or(0);
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    let todos = parse_file(&text)
+        .into_iter()
+        .map(|mut t| {
+            (t.group, t.topic) = place(relative, &t.group);
+            t.file = path.to_path_buf();
+            t
+        })
+        .collect();
+    Some((path.to_string_lossy().into_owned(), mtime, todos))
+}
+
+/// Splits whichever of `dir`'s `.md` files `cache` doesn't already have unchanged evenly across
+/// a handful of worker threads by file *count*, not by top-level folder: one vault folder
+/// (`Steven/`) holds 56% of all files, so a thread-per-folder split caps speedup at ~1.8x no
+/// matter how many other folders exist. Listing paths first (cheap) and only then chunking
+/// keeps every worker's share of the expensive part — reading content — roughly equal.
+///
+/// Returns this root's todos and the cache entries (hits and misses alike) to fold back in —
+/// merging and saving the cache is the caller's job, once, after every configured root has run:
+/// `[todos] dirs` lists more than one root (only one of which exists on a given machine), and
+/// saving per-root here would let an empty root's result clobber another root's real cache.
+fn scan_parallel(
+    root: &Path,
+    dir: &Path,
+    cache: &Arc<TodoCache>,
+) -> (Vec<Todo>, HashMap<String, (u64, Vec<Todo>)>) {
+    let mut paths = Vec::new();
+    collect_md_files(dir, &mut paths);
+
+    // Flat from 4 to 32 workers in testing (all ~12-20ms); 8 is a safe default with no need
+    // to over-thread. Override with HERDR_OVERVIEW_SCAN_WORKERS for future tuning.
+    let workers: usize = std::env::var("HERDR_OVERVIEW_SCAN_WORKERS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8);
+    let chunk_size = paths.len().div_ceil(workers).max(1);
+    let root = root.to_path_buf();
+    // One pass per worker — stat, then either reuse an unchanged cache hit or read+parse on a
+    // miss — rather than a single-threaded stat phase followed by a parallel parse phase: the
+    // stat() itself isn't free on an iCloud-backed file either, just cheaper than a full read,
+    // so folding it into the same worker pool overlaps it with other workers' content reads too.
+    let handles: Vec<_> = paths
+        .chunks(chunk_size)
+        .map(|chunk| {
+            let root = root.clone();
+            let chunk = chunk.to_vec();
+            let cache = Arc::clone(cache);
+            thread::spawn(move || {
+                chunk
+                    .iter()
+                    .filter_map(|path| {
+                        let key = path.to_string_lossy().into_owned();
+                        match mtime_millis(path) {
+                            Some(mtime)
+                                if cache.entries.get(&key).is_some_and(|(m, _)| *m == mtime) =>
+                            {
+                                let todos = cache.entries[&key].1.clone();
+                                Some((key, mtime, todos))
+                            }
+                            _ => parse_file_fresh(&root, path),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+
+    let mut todos = Vec::new();
+    let mut fresh = HashMap::new();
+    for (key, mtime, file_todos) in handles.into_iter().flat_map(|h| h.join().unwrap_or_default())
+    {
+        todos.extend(file_todos.clone());
+        fresh.insert(key, (mtime, file_todos));
+    }
+    (todos, fresh)
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -989,22 +1201,55 @@ struct App {
     folder_filter: String,
     /// The folder and the worktree description being typed after `w`.
     naming: Option<(PathBuf, String)>,
+    /// How long the most recent `App::load()` took, in milliseconds.
+    load_ms: u128,
 }
 
 impl App {
     fn load() -> Self {
+        let started = Instant::now();
+        let t = Instant::now();
         let config = config_path()
             .and_then(|p| fs::read_to_string(p).ok())
             .unwrap_or_default();
+        log_timing("config_read", t);
+        let t = Instant::now();
         let dirs = config_dirs(&config, "todos");
         let repo_dirs = config_dirs(&config, "repos");
-        let mut todos = Vec::new();
-        for dir in &dirs {
-            scan(dir, dir, &mut todos);
-        }
+        log_timing("config_parse", t);
+        // The vault scan and the herdr agent reads touch nothing in common, so they run
+        // concurrently: wall time is the slower of the two, not their sum.
+        let t = Instant::now();
+        let scan_dirs = dirs.clone();
+        let todos_handle = thread::spawn(move || {
+            let scan_start = Instant::now();
+            let cache = Arc::new(TodoCache::load());
+            let mut todos = Vec::new();
+            let mut fresh = HashMap::new();
+            for dir in &scan_dirs {
+                let (dir_todos, dir_fresh) = scan_parallel(dir, dir, &cache);
+                todos.extend(dir_todos);
+                fresh.extend(dir_fresh);
+            }
+            TodoCache { entries: fresh }.save();
+            log_timing("  scan.total", scan_start);
+            todos
+        });
+        let agents = load_agents();
+        let todos = todos_handle.join().unwrap_or_default();
+        log_timing("scan+agents_concurrent", t);
+        let t = Instant::now();
+        let groups_v = groups(&todos);
+        log_timing("groups", t);
+        let t = Instant::now();
+        let memory = Memory::load();
+        log_timing("memory_load", t);
+        let t = Instant::now();
+        let folders = load_folders(&repo_dirs);
+        log_timing("load_folders", t);
         let mut app = App {
-            agents: load_agents(),
-            groups: groups(&todos),
+            agents,
+            groups: groups_v,
             todos,
             group: 0,
             focus: Focus::Agents,
@@ -1012,19 +1257,21 @@ impl App {
             todo_list: ListState::default().with_selected(Some(0)),
             todo_offset: 0,
             configured: !dirs.is_empty(),
-            memory: Memory::load(),
+            memory,
             agent_filter: String::new(),
             todo_filter: String::new(),
             typing: false,
             link: None,
             notice: None,
-            folders: load_folders(&repo_dirs),
+            folders,
             repo_dirs,
             adding: None,
             folder_list: ListState::default().with_selected(Some(0)),
             folder_filter: String::new(),
             naming: None,
+            load_ms: started.elapsed().as_millis(),
         };
+        log_timing("TOTAL", started);
         if app.agents.is_empty() {
             app.focus = Focus::Todos;
         }
@@ -1148,6 +1395,7 @@ impl App {
         self.configured = fresh.configured;
         self.repo_dirs = fresh.repo_dirs;
         self.folders = fresh.folders;
+        self.load_ms = fresh.load_ms;
         if let Some(i) = folder.and_then(|d| self.visible_folders().iter().position(|p| **p == d)) {
             self.folder_list.select(Some(i));
         }
@@ -1208,11 +1456,17 @@ impl App {
 }
 
 fn main() -> std::io::Result<()> {
+    let process_start = Instant::now();
     match std::env::args().nth(1).as_deref() {
         Some("track") => track_focus(),
+        Some("timing") => {
+            let app = App::load();
+            println!("load_ms={} todos={}", app.load_ms, app.todos.len());
+        }
         _ => {
             let mut terminal = ratatui::init();
-            let result = run(&mut terminal);
+            log_timing("ratatui_init", process_start);
+            let result = run(&mut terminal, process_start);
             ratatui::restore();
             return result;
         }
@@ -1227,12 +1481,18 @@ fn current_pane() -> Option<String> {
     v["focused_pane_id"].as_str().map(str::to_string)
 }
 
-fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+fn run(terminal: &mut DefaultTerminal, process_start: Instant) -> std::io::Result<()> {
     let mut app = App::load();
+    log_timing("process_start_to_app_loaded", process_start);
     app.select_other_agent(current_pane().as_deref());
     let mut refreshed = Instant::now();
+    let mut first_draw = true;
     loop {
         terminal.draw(|f| draw(f, &mut app))?;
+        if first_draw {
+            log_timing("process_start_to_first_draw", process_start);
+            first_draw = false;
+        }
         if refreshed.elapsed() > Duration::from_secs(2) {
             app.refresh();
             refreshed = Instant::now();
@@ -1715,6 +1975,10 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
             ));
         }
     }
+    top.push(Span::styled(
+        format!("{}ms  ", app.load_ms),
+        Style::new().fg(palette::SUBTEXT),
+    ));
     // What the icons mean, right-aligned on the same strip.
     let legend: Vec<Span> = Status::ALL
         .iter()
