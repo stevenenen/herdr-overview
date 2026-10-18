@@ -2371,6 +2371,7 @@ mod tests {
             folder_list: ListState::default(),
             folder_filter: String::new(),
             naming: None,
+            load_ms: 0,
         };
         app.select_other_agent(Some("p1"));
         assert_eq!(app.agent_list.selected(), Some(1));
@@ -2439,6 +2440,7 @@ mod tests {
             folder_list: ListState::default(),
             folder_filter: String::new(),
             naming: None,
+            load_ms: 0,
         };
         let order = |app: &App| -> Vec<String> {
             app.visible_todos().iter().map(|t| t.text.clone()).collect()
@@ -2479,6 +2481,7 @@ mod tests {
             folder_list: ListState::default(),
             folder_filter: String::new(),
             naming: None,
+            load_ms: 0,
         };
         let mut now = app(vec![todo("work", "b"), todo("work", "c")]);
         now.group = 1;
@@ -2686,6 +2689,7 @@ mod tests {
             folder_list: ListState::default(),
             folder_filter: String::new(),
             naming: None,
+            load_ms: 0,
         };
         assert!(!app.back_out());
         assert!(!app.typing);
