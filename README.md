@@ -52,9 +52,6 @@ refresh every 2 seconds without moving your selection.
   - anything else gets a Claude tab, as `t` does.
 - **`t` on a todo** opens a new tab running `claude "<todo>"` and remembers the link (`↗`).
   `t` again goes back to that tab; if the tab was closed, a new one opens.
-- **Folders**, right of the todos, lists each `[repos] dirs` folder and the folders inside it
-  (`⎇` marks a git repo). Enter opens a tab there; `w` asks for a description and opens a
-  worktree of that repo named after it, with Claude started in it.
 - **Space** crosses a todo out (`☒`), Space again undoes it. This only marks it in the
   overview; the note is left alone.
 - **`o`** opens the todo's note where it lives. A note inside an Obsidian vault (one Obsidian
@@ -130,8 +127,6 @@ description = "Overview: agents and todos"
 | `Space` on a todo | Cross out / undo |
 | `o` on a todo | Open its note: in Obsidian when it is in a vault, else in your editor |
 | `a` on a todo | Add a todo below it, in the same note |
-| `Enter` on a folder | Open a tab in it |
-| `w` on a folder | New worktree: type a description; branch, folder and workspace get it as `lower-hyphen-words`, the tab gets it in full |
 | `Esc` | Stop typing, then clear the filter, then close |
 
 ## Development

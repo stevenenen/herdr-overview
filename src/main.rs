@@ -468,7 +468,10 @@ impl TodoCache {
                         })
                     })
                     .collect();
-                (key.clone(), serde_json::json!({ "mtime": mtime, "todos": todos }))
+                (
+                    key.clone(),
+                    serde_json::json!({ "mtime": mtime, "todos": todos }),
+                )
             })
             .collect();
         let _ = fs::write(path, Value::Object(map).to_string());
@@ -551,7 +554,9 @@ fn scan_parallel(
 
     let mut todos = Vec::new();
     let mut fresh = HashMap::new();
-    for (key, mtime, file_todos) in handles.into_iter().flat_map(|h| h.join().unwrap_or_default())
+    for (key, mtime, file_todos) in handles
+        .into_iter()
+        .flat_map(|h| h.join().unwrap_or_default())
     {
         todos.extend(file_todos.clone());
         fresh.insert(key, (mtime, file_todos));
@@ -1027,56 +1032,6 @@ fn open_worktree(
     Ok(())
 }
 
-/// Each `[repos] dirs` folder itself, then the folders inside it, by name.
-fn load_folders(dirs: &[PathBuf]) -> Vec<PathBuf> {
-    let mut list = Vec::new();
-    for dir in dirs {
-        list.push(dir.clone());
-        let mut inside: Vec<PathBuf> = fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect();
-        inside.sort_by_key(|p| p.file_name().map(|n| n.to_ascii_lowercase()));
-        list.extend(inside);
-    }
-    list
-}
-
-/// A branch, worktree and workspace name from free text: `Fix the login (SSO)!` is
-/// `fix-the-login-sso`.
-fn branch_slug(text: &str) -> String {
-    slug("", text).trim_start_matches('-').to_string()
-}
-
-/// `w` in Folders: a worktree of the folder's repo, its branch, folder and workspace named
-/// after `text`, and its tab named `text` in full.
-fn new_worktree(dir: &Path, text: &str) -> Result<(), String> {
-    let name = branch_slug(text);
-    if name.is_empty() {
-        return Err("type a description with letters or digits".into());
-    }
-    // The main clone, also when `dir` is itself a linked worktree.
-    let common = git(
-        dir,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )
-    .ok_or_else(|| format!("{} is not a git repository", dir.display()))?;
-    let clone = Path::new(&common).parent().unwrap_or(dir).to_path_buf();
-    let base = default_base(&clone);
-    open_worktree(&clone, &name, Some(&base), &name, text.trim(), "")
-}
-
-/// Enter in Folders: a plain tab in the folder, named after it.
-fn folder_tab(dir: &Path) -> Result<(), String> {
-    let cwd = dir.to_string_lossy();
-    let name = dir.file_name().unwrap_or_default().to_string_lossy();
-    herdr_result(&["tab", "create", "--cwd", &cwd, "--label", &name, "--focus"]).map(|_| ())
-}
-
 /// Inserts `- [ ] <text>` right after `after`'s line in its note, with the same indent and
 /// `#todo/` tag, and returns the new file contents.
 fn insert_todo(note: &str, after: &Todo, text: &str) -> String {
@@ -1212,7 +1167,6 @@ fn groups(todos: &[Todo]) -> Vec<(String, usize)> {
 enum Focus {
     Agents,
     Todos,
-    Folders,
 }
 
 struct App {
@@ -1238,11 +1192,6 @@ struct App {
     repo_dirs: Vec<PathBuf>,
     /// The todo being typed after `a`, added below the selected one.
     adding: Option<String>,
-    folders: Vec<PathBuf>,
-    folder_list: ListState,
-    folder_filter: String,
-    /// The folder and the worktree description being typed after `w`.
-    naming: Option<(PathBuf, String)>,
     /// How long the most recent `App::load()` took, in milliseconds.
     load_ms: u128,
 }
@@ -1286,9 +1235,6 @@ impl App {
         let t = Instant::now();
         let memory = Memory::load();
         log_timing("memory_load", t);
-        let t = Instant::now();
-        let folders = load_folders(&repo_dirs);
-        log_timing("load_folders", t);
         let mut app = App {
             agents,
             groups: groups_v,
@@ -1305,12 +1251,8 @@ impl App {
             typing: false,
             link: None,
             notice: None,
-            folders,
             repo_dirs,
             adding: None,
-            folder_list: ListState::default().with_selected(Some(0)),
-            folder_filter: String::new(),
-            naming: None,
             load_ms: started.elapsed().as_millis(),
         };
         log_timing("TOTAL", started);
@@ -1332,18 +1274,6 @@ impl App {
             .position(|(g, _)| g == group)
             .unwrap_or(0);
         GROUP_COLORS[i % GROUP_COLORS.len()]
-    }
-
-    fn visible_folders(&self) -> Vec<&PathBuf> {
-        self.folders
-            .iter()
-            .filter(|p| matches(&self.folder_filter, &[&p.to_string_lossy()]))
-            .collect()
-    }
-
-    fn selected_folder(&self) -> Option<PathBuf> {
-        let i = self.folder_list.selected()?;
-        self.visible_folders().get(i).map(|p| p.to_path_buf())
     }
 
     fn visible_agents(&self) -> Vec<&Agent> {
@@ -1371,7 +1301,6 @@ impl App {
         match self.focus {
             Focus::Agents => &mut self.agent_filter,
             Focus::Todos => &mut self.todo_filter,
-            Focus::Folders => &mut self.folder_filter,
         }
     }
 
@@ -1379,7 +1308,6 @@ impl App {
         match self.focus {
             Focus::Agents => &mut self.agent_list,
             Focus::Todos => &mut self.todo_list,
-            Focus::Folders => &mut self.folder_list,
         }
     }
 
@@ -1406,10 +1334,6 @@ impl App {
                 let len = self.visible_todos().len();
                 (&mut self.todo_list, len)
             }
-            Focus::Folders => {
-                let len = self.visible_folders().len();
-                (&mut self.folder_list, len)
-            }
         };
         if len > 0 {
             let i = state.selected().unwrap_or(0) as isize + delta;
@@ -1429,18 +1353,13 @@ impl App {
             .selected()
             .and_then(|i| self.visible_agents().get(i).map(|a| a.pane_id.clone()));
         let todo = self.selected_todo().map(|t| t.text.clone());
-        let folder = self.selected_folder();
         let group = self.group.checked_sub(1).map(|i| self.groups[i].0.clone());
         self.agents = fresh.agents;
         self.todos = fresh.todos;
         self.groups = fresh.groups;
         self.configured = fresh.configured;
         self.repo_dirs = fresh.repo_dirs;
-        self.folders = fresh.folders;
         self.load_ms = fresh.load_ms;
-        if let Some(i) = folder.and_then(|d| self.visible_folders().iter().position(|p| **p == d)) {
-            self.folder_list.select(Some(i));
-        }
         self.group = group
             .and_then(|g| self.groups.iter().position(|(n, _)| *n == g))
             .map_or(0, |i| i + 1);
@@ -1459,12 +1378,7 @@ impl App {
     fn focus_in_range(&mut self) {
         let agents = self.visible_agents().len();
         let todos = self.visible_todos().len();
-        let folders = self.visible_folders().len();
-        for (state, len) in [
-            (&mut self.agent_list, agents),
-            (&mut self.todo_list, todos),
-            (&mut self.folder_list, folders),
-        ] {
+        for (state, len) in [(&mut self.agent_list, agents), (&mut self.todo_list, todos)] {
             if let Some(i) = state.selected() {
                 state.select(Some(i.min(len.saturating_sub(1))));
             }
@@ -1574,26 +1488,6 @@ fn run(terminal: &mut DefaultTerminal, process_start: Instant) -> std::io::Resul
             }
             continue;
         }
-        if let Some((_, text)) = app.naming.as_mut() {
-            match key.code {
-                KeyCode::Char(c) => text.push(c),
-                KeyCode::Backspace => {
-                    text.pop();
-                }
-                KeyCode::Esc => app.naming = None,
-                KeyCode::Enter => {
-                    let (dir, text) = app.naming.take().unwrap_or_default();
-                    app.notice = Some(format!("creating worktree {}…", branch_slug(&text)));
-                    terminal.draw(|f| draw(f, &mut app))?;
-                    match new_worktree(&dir, &text) {
-                        Ok(()) => return Ok(()),
-                        Err(e) => app.notice = Some(e),
-                    }
-                }
-                _ => {}
-            }
-            continue;
-        }
         if let Some(link) = app.link.as_mut() {
             match key.code {
                 KeyCode::Char(c) => link.push(c),
@@ -1641,34 +1535,11 @@ fn run(terminal: &mut DefaultTerminal, process_start: Instant) -> std::io::Resul
                 app.link = Some(String::new());
                 app.notice = None;
             }
-            KeyCode::Tab => {
+            KeyCode::Tab | KeyCode::BackTab => {
                 app.typing = false;
                 app.focus = match app.focus {
                     Focus::Agents => Focus::Todos,
-                    Focus::Todos => Focus::Folders,
-                    Focus::Folders => Focus::Agents,
-                }
-            }
-            KeyCode::BackTab => {
-                app.typing = false;
-                app.focus = match app.focus {
-                    Focus::Agents => Focus::Folders,
                     Focus::Todos => Focus::Agents,
-                    Focus::Folders => Focus::Todos,
-                }
-            }
-            KeyCode::Char('w') if app.focus == Focus::Folders => {
-                if let Some(dir) = app.selected_folder() {
-                    app.naming = Some((dir, String::new()));
-                    app.notice = None;
-                }
-            }
-            KeyCode::Enter if app.focus == Focus::Folders => {
-                if let Some(dir) = app.selected_folder() {
-                    match folder_tab(&dir) {
-                        Ok(()) => return Ok(()),
-                        Err(e) => app.notice = Some(e),
-                    }
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => app.step(1),
@@ -1797,62 +1668,42 @@ fn draw(f: &mut Frame, app: &mut App) {
         Block::new().style(Style::new().bg(palette::BG).fg(palette::TEXT)),
         area,
     );
-    let bar =
-        app.link.is_some() || app.adding.is_some() || app.naming.is_some() || app.notice.is_some();
+    let bar = app.link.is_some() || app.adding.is_some() || app.notice.is_some();
     let [bar_area, body] = Layout::vertical([
         Constraint::Length(if bar { 2 } else { 0 }),
         Constraint::Fill(1),
     ])
     .areas(area);
     if bar {
-        let line = if let Some((dir, text)) = &app.naming {
-            Line::from(vec![
+        let line = match (&app.link, &app.adding) {
+            (_, Some(text)) => Line::from(vec![
                 Span::styled(
-                    " New worktree ",
-                    Style::new().fg(palette::BG).bg(palette::MAUVE).bold(),
+                    " New todo ",
+                    Style::new().fg(palette::BG).bg(palette::GREEN).bold(),
                 ),
                 Span::styled(format!(" {text}"), Style::new().fg(palette::TEXT)),
-                Span::styled("▏", Style::new().fg(palette::MAUVE)),
+                Span::styled("▏", Style::new().fg(palette::GREEN)),
                 Span::styled(
-                    format!(
-                        "   branch {}  in {}   Enter create  Esc cancel",
-                        branch_slug(text),
-                        dir.file_name().unwrap_or_default().to_string_lossy()
-                    ),
+                    "   Enter add below the selected todo  Esc cancel",
                     Style::new().fg(palette::SUBTEXT),
                 ),
-            ])
-        } else {
-            match (&app.link, &app.adding) {
-                (_, Some(text)) => Line::from(vec![
-                    Span::styled(
-                        " New todo ",
-                        Style::new().fg(palette::BG).bg(palette::GREEN).bold(),
-                    ),
-                    Span::styled(format!(" {text}"), Style::new().fg(palette::TEXT)),
-                    Span::styled("▏", Style::new().fg(palette::GREEN)),
-                    Span::styled(
-                        "   Enter add below the selected todo  Esc cancel",
-                        Style::new().fg(palette::SUBTEXT),
-                    ),
-                ]),
-                (Some(link), None) => Line::from(vec![
-                    Span::styled(
-                        " GitHub link ",
-                        Style::new().fg(palette::BG).bg(palette::ACCENT).bold(),
-                    ),
-                    Span::styled(format!(" {link}"), Style::new().fg(palette::TEXT)),
-                    Span::styled("▏", Style::new().fg(palette::ACCENT)),
-                    Span::styled(
-                        "   Enter open  Esc cancel",
-                        Style::new().fg(palette::SUBTEXT),
-                    ),
-                ]),
-                (None, None) => Line::from(Span::styled(
-                    format!(" {}", app.notice.as_deref().unwrap_or_default()),
-                    Style::new().fg(palette::YELLOW),
-                )),
-            }
+            ]),
+            (Some(link), None) => Line::from(vec![
+                Span::styled(
+                    " GitHub link ",
+                    Style::new().fg(palette::BG).bg(palette::ACCENT).bold(),
+                ),
+                Span::styled(format!(" {link}"), Style::new().fg(palette::TEXT)),
+                Span::styled("▏", Style::new().fg(palette::ACCENT)),
+                Span::styled(
+                    "   Enter open  Esc cancel",
+                    Style::new().fg(palette::SUBTEXT),
+                ),
+            ]),
+            (None, None) => Line::from(Span::styled(
+                format!(" {}", app.notice.as_deref().unwrap_or_default()),
+                Style::new().fg(palette::YELLOW),
+            )),
         };
         f.render_widget(
             Paragraph::new(line).block(
@@ -1872,25 +1723,15 @@ fn draw(f: &mut Frame, app: &mut App) {
         Constraint::Length(hint_lines(AGENT_KEYS, left.width).len() as u16 + 1),
     ])
     .areas(left);
-    // Todos and folders share the lower half, folders on the right.
-    let [right, folders] =
-        Layout::horizontal([Constraint::Percentage(62), Constraint::Fill(1)]).areas(right);
     let [right, right_keys] = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(hint_lines(TODO_KEYS, right.width).len() as u16 + 1),
     ])
     .areas(right);
-    let [folders, folder_keys] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(hint_lines(FOLDER_KEYS, folders.width).len() as u16 + 1),
-    ])
-    .areas(folders);
     draw_agents(f, app, left);
     draw_todos(f, app, right);
-    draw_folders(f, app, folders);
     draw_hints(f, left_keys, AGENT_KEYS);
     draw_hints(f, right_keys, TODO_KEYS);
-    draw_hints(f, folder_keys, FOLDER_KEYS);
 }
 
 /// Title strip plus a column header, as in Recent Navigator. Returns the list area.
@@ -1958,56 +1799,6 @@ fn section(f: &mut Frame, area: Rect, top: Line, search: Line, columns: Line) ->
 
 fn number(i: usize) -> Span<'static> {
     Span::styled(format!("{:>2}. ", i + 1), Style::new().fg(palette::SUBTEXT))
-}
-
-fn draw_folders(f: &mut Frame, app: &mut App, area: Rect) {
-    let focused = app.focus == Focus::Folders;
-    let top = Line::from(title("Folders", focused));
-    let folders = app.visible_folders();
-    let search = filter_line(
-        &app.folder_filter,
-        app.typing && focused,
-        folders.len(),
-        app.folders.len(),
-        area.width,
-    );
-    let columns = Line::from(vec![Span::raw("      "), header("Folder")]);
-    let list_area = section(f, area, top, search, columns);
-    let home = std::env::var("HOME").unwrap_or_default();
-    let items: Vec<ListItem> = folders
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            // A configured root shows as its path, a folder inside it by name.
-            let name = if app.repo_dirs.contains(p) {
-                let path = p.to_string_lossy();
-                match path.strip_prefix(&home) {
-                    Some(rest) if !home.is_empty() => format!("~{rest}"),
-                    _ => path.into_owned(),
-                }
-            } else {
-                p.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned()
-            };
-            let git = if p.join(".git").exists() {
-                "⎇ "
-            } else {
-                "  "
-            };
-            ListItem::new(Line::from(vec![
-                number(i),
-                Span::styled(git, Style::new().fg(palette::MAUVE)),
-                Span::styled(name, Style::new().fg(palette::TEXT).bold()),
-            ]))
-        })
-        .collect();
-    let mut list = List::new(items);
-    if focused {
-        list = list.highlight_style(Style::new().bg(palette::SELECTED));
-    }
-    f.render_stateful_widget(list, list_area, &mut app.folder_list);
 }
 
 fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
@@ -2245,16 +2036,6 @@ const TODO_KEYS: &[(&str, &str)] = &[
     ("Space", "cross out"),
     ("o", "open note"),
     ("a", "add todo below"),
-    ("Tab", "to folders"),
-    ("Esc", "back / close"),
-];
-
-const FOLDER_KEYS: &[(&str, &str)] = &[
-    ("/", "filter"),
-    ("j/k ↑/↓", "move"),
-    ("g/G", "top/bottom"),
-    ("Enter", "tab here"),
-    ("w", "new worktree"),
     ("Tab", "to agents"),
     ("Esc", "back / close"),
 ];
@@ -2367,10 +2148,6 @@ mod tests {
             notice: None,
             repo_dirs: vec![],
             adding: None,
-            folders: vec![],
-            folder_list: ListState::default(),
-            folder_filter: String::new(),
-            naming: None,
             load_ms: 0,
         };
         app.select_other_agent(Some("p1"));
@@ -2436,10 +2213,6 @@ mod tests {
             notice: None,
             repo_dirs: vec![],
             adding: None,
-            folders: vec![],
-            folder_list: ListState::default(),
-            folder_filter: String::new(),
-            naming: None,
             load_ms: 0,
         };
         let order = |app: &App| -> Vec<String> {
@@ -2477,10 +2250,6 @@ mod tests {
             notice: None,
             repo_dirs: vec![],
             adding: None,
-            folders: vec![],
-            folder_list: ListState::default(),
-            folder_filter: String::new(),
-            naming: None,
             load_ms: 0,
         };
         let mut now = app(vec![todo("work", "b"), todo("work", "c")]);
@@ -2567,33 +2336,6 @@ mod tests {
         assert_eq!(name("ce-1"), None);
         assert_eq!(name("development agentic"), None);
         assert_eq!(name("Passport"), None);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn branch_slug_makes_free_text_a_valid_name() {
-        assert_eq!(branch_slug("Fix the login (SSO)!"), "fix-the-login-sso");
-        assert_eq!(branch_slug("  ✨ "), "");
-        assert!(branch_slug(&"word ".repeat(40)).len() <= 48);
-    }
-
-    #[test]
-    fn load_folders_lists_the_root_then_its_folders_by_name() {
-        let root = std::env::temp_dir().join(format!("overview-folders-{}", std::process::id()));
-        for d in ["beta", "Alpha", ".hidden"] {
-            fs::create_dir_all(root.join(d)).unwrap();
-        }
-        fs::write(root.join("file.md"), "").unwrap();
-        let names: Vec<_> = load_folders(std::slice::from_ref(&root))
-            .iter()
-            .map(|p| {
-                p.strip_prefix(&root)
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect();
-        assert_eq!(names, vec!["", "Alpha", "beta"]);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2685,10 +2427,6 @@ mod tests {
             notice: None,
             repo_dirs: vec![],
             adding: None,
-            folders: vec![],
-            folder_list: ListState::default(),
-            folder_filter: String::new(),
-            naming: None,
             load_ms: 0,
         };
         assert!(!app.back_out());
@@ -2773,10 +2511,7 @@ mod tests {
             {"pane_id": "p2", "tab_id": "t2", "workspace_id": "w1"},
         ]});
         let workspaces = HashMap::from([("w1".into(), "api".into())]);
-        let tabs = HashMap::from([
-            ("t1".into(), "main".into()),
-            ("t2".into(), "notes".into()),
-        ]);
+        let tabs = HashMap::from([("t1".into(), "main".into()), ("t2".into(), "notes".into())]);
         let known = HashSet::from(["p1".to_string()]);
         let list = parse_panes(&panes, &workspaces, &tabs, &known);
         assert_eq!(list.len(), 1);
@@ -2799,7 +2534,12 @@ mod tests {
         let focused = HashMap::from([("p1".into(), 100), ("p2".into(), 200)]);
         let mut list = parse_agents(&agents, &HashMap::new(), &HashMap::new(), &focused);
         let known: HashSet<String> = list.iter().map(|a| a.pane_id.clone()).collect();
-        list.extend(parse_panes(&panes, &HashMap::new(), &HashMap::new(), &known));
+        list.extend(parse_panes(
+            &panes,
+            &HashMap::new(),
+            &HashMap::new(),
+            &known,
+        ));
         sort_agents(&mut list, &focused);
         let order: Vec<_> = list.iter().map(|a| a.pane_id.as_str()).collect();
         // p2 has no agent but was focused more recently than p1, so it leads anyway.
