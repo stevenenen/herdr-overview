@@ -1,11 +1,11 @@
 # Herdr Overview
 
-One popup for a [Herdr](https://herdr.dev) session: which agents need you, and every open todo
-in your notes. While it is open, agents and todos
+One popup for a [Herdr](https://herdr.dev) session: which agents need you, every other open
+tab, and every open todo in your notes. While it is open, agents, tabs and todos
 refresh every 2 seconds without moving your selection.
 
 ```
- Agents   × 1  ✓ 2  ◐ 1  ○ 2
+ Agents   × 1  ✓ 2  ◐ 1  ○ 2  · 3
 ──────────────────────────────────────────────────────────────────────
  > / to filter                                                      6
 ──────────────────────────────────────────────────────────────────────
@@ -13,8 +13,9 @@ refresh every 2 seconds without moving your selection.
  1. × Fix login test            api
  2. ✓ Update README             web
  3. ◐ main                      api
+ 4. · notes                     web
 ──────────────────────────────────────────────────────────────────────
-  u open GitHub link  / filter  j/k ↑/↓ move  Enter go to agent  …
+  u open GitHub link  / filter  j/k ↑/↓ move  Enter go to tab  …
  Todo   ☐ 24
 ──────────────────────────────────────────────────────────────────────
  > pass▏                                                         1/24
@@ -29,10 +30,12 @@ refresh every 2 seconds without moving your selection.
   / filter  h/l ←/→ group  Enter Claude tab  Space cross out  …
 ```
 
-- **Agents** are sorted most recently focused first; agents you have not focused yet follow,
-  by urgency: blocked, done, working, idle. Same symbols and colors as
-  the Herdr sidebar. The overview starts on the most recent agent other than the one you are
-  in, so `prefix+a` then Enter jumps back to it. The one you are in is drawn in blue. Enter jumps to the agent.
+- **Agents** lists every open tab, agent or not — sorted most recently focused first; rows
+  never focused follow, by urgency: blocked, done, working, idle, then plain tabs with no
+  agent (`·`). Same symbols and colors as the Herdr sidebar. The overview starts on the most
+  recent agent other than the one you are in, so `prefix+a` then Enter jumps back to it. The
+  one you are in is drawn in blue. Enter jumps to the tab; for a plain tab this just switches
+  to it, since there is no agent to resume.
 - **Todos** are every open Markdown checkbox (`- [ ] ...`) in the folders you configure.
   Code blocks are skipped. They are grouped two levels deep, from where the note lives:
   - the **area** (the bars, `h`/`l` to pick one) is the first word of the top folder, so

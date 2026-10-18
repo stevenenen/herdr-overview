@@ -1,7 +1,7 @@
 //! Herdr Overview: one popup with the agents that need you and every open todo, kept live.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     io::{BufRead, BufReader, Write},
     os::unix::net::UnixStream,
@@ -109,6 +109,7 @@ struct Agent {
     tab: String,
     title: String,
     pane_id: String,
+    tab_id: String,
 }
 
 #[derive(Debug, PartialEq, Default, Clone)]
@@ -180,7 +181,14 @@ fn labels(result: Option<Value>, list: &str, id: &str) -> HashMap<String, String
     map
 }
 
-/// Most recently focused first; agents never focused follow, by urgency.
+/// Most recently focused first; rows never focused follow, by urgency.
+fn sort_agents(list: &mut [Agent], focused: &HashMap<String, u64>) {
+    let last = |a: &Agent| std::cmp::Reverse(focused.get(&a.pane_id).copied().unwrap_or(0));
+    list.sort_by(|a, b| {
+        (last(a), a.status, &a.workspace, &a.tab).cmp(&(last(b), b.status, &b.workspace, &b.tab))
+    });
+}
+
 fn parse_agents(
     agents: &Value,
     workspaces: &HashMap<String, String>,
@@ -201,14 +209,43 @@ fn parse_agents(
                 tab: label(tabs, "tab_id"),
                 title: s("terminal_title_stripped"),
                 pane_id: s("pane_id"),
+                tab_id: s("tab_id"),
             }
         })
         .collect();
-    let last = |a: &Agent| std::cmp::Reverse(focused.get(&a.pane_id).copied().unwrap_or(0));
-    list.sort_by(|a, b| {
-        (last(a), a.status, &a.workspace, &a.tab).cmp(&(last(b), b.status, &b.workspace, &b.tab))
-    });
+    sort_agents(&mut list, focused);
     list
+}
+
+/// Open panes with no agent attached. Shown with no status so they still sort by last focus
+/// and Enter still reaches them, just via `tab focus` instead of `agent focus`.
+fn parse_panes(
+    panes: &Value,
+    workspaces: &HashMap<String, String>,
+    tabs: &HashMap<String, String>,
+    known: &HashSet<String>,
+) -> Vec<Agent> {
+    panes["panes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            let pane_id = p["pane_id"].as_str()?.to_string();
+            if known.contains(&pane_id) {
+                return None;
+            }
+            let tab_id = p["tab_id"].as_str().unwrap_or_default().to_string();
+            let workspace_id = p["workspace_id"].as_str().unwrap_or_default();
+            Some(Agent {
+                status: Status::Unknown,
+                workspace: workspaces.get(workspace_id).cloned().unwrap_or_default(),
+                tab: tabs.get(&tab_id).cloned().unwrap_or_default(),
+                title: String::new(),
+                pane_id,
+                tab_id,
+            })
+        })
+        .collect()
 }
 
 fn now_millis() -> u64 {
@@ -269,10 +306,15 @@ fn load_agents() -> Vec<Agent> {
     let workspaces = labels(snapshot.clone(), "workspaces", "workspace_id");
     let tabs = labels(snapshot.clone(), "tabs", "tab_id");
     let focused = load_focus();
-    snapshot
-        .as_ref()
-        .map(|s| parse_agents(s, &workspaces, &tabs, &focused))
-        .unwrap_or_default()
+    let Some(snap) = snapshot.as_ref() else {
+        return Vec::new();
+    };
+    // The same snapshot already lists every pane, agent or not, so no extra call is needed.
+    let mut list = parse_agents(snap, &workspaces, &tabs, &focused);
+    let known: HashSet<String> = list.iter().map(|a| a.pane_id.clone()).collect();
+    list.extend(parse_panes(snap, &workspaces, &tabs, &known));
+    sort_agents(&mut list, &focused);
+    list
 }
 
 /// An open Markdown checkbox. The group is its `#todo/<group>` tag, else "other".
@@ -1272,7 +1314,7 @@ impl App {
             load_ms: started.elapsed().as_millis(),
         };
         log_timing("TOTAL", started);
-        if app.agents.is_empty() {
+        if !app.agents.iter().any(|a| a.status != Status::Unknown) {
             app.focus = Focus::Todos;
         }
         app.group = app
@@ -1662,7 +1704,11 @@ fn run(terminal: &mut DefaultTerminal, process_start: Instant) -> std::io::Resul
             KeyCode::Enter if app.focus == Focus::Agents => {
                 let agents = app.visible_agents();
                 if let Some(a) = app.agent_list.selected().and_then(|i| agents.get(i)) {
-                    herdr(&["agent", "focus", &a.pane_id]);
+                    if a.status == Status::Unknown {
+                        herdr(&["tab", "focus", &a.tab_id]);
+                    } else {
+                        herdr(&["agent", "focus", &a.pane_id]);
+                    }
                     return Ok(());
                 }
             }
@@ -2714,5 +2760,45 @@ mod tests {
                 (Status::Idle, "api › main".to_string(), "p1"),
             ]
         );
+    }
+
+    #[test]
+    fn panes_without_an_agent_are_skipped_when_already_known() {
+        let panes = json!({"panes": [
+            {"pane_id": "p1", "tab_id": "t1", "workspace_id": "w1"},
+            {"pane_id": "p2", "tab_id": "t2", "workspace_id": "w1"},
+        ]});
+        let workspaces = HashMap::from([("w1".into(), "api".into())]);
+        let tabs = HashMap::from([
+            ("t1".into(), "main".into()),
+            ("t2".into(), "notes".into()),
+        ]);
+        let known = HashSet::from(["p1".to_string()]);
+        let list = parse_panes(&panes, &workspaces, &tabs, &known);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].pane_id, "p2");
+        assert_eq!(list[0].tab_id, "t2");
+        assert_eq!(list[0].tab, "notes");
+        assert_eq!(list[0].workspace, "api");
+        assert_eq!(list[0].status, Status::Unknown);
+    }
+
+    #[test]
+    fn plain_panes_mix_into_agent_rows_by_most_recent_focus() {
+        let agents = json!({"agents": [
+            {"agent_status": "idle", "pane_id": "p1", "tab_id": "t1"},
+        ]});
+        let panes = json!({"panes": [
+            {"pane_id": "p1", "tab_id": "t1", "workspace_id": "w1"},
+            {"pane_id": "p2", "tab_id": "t2", "workspace_id": "w1"},
+        ]});
+        let focused = HashMap::from([("p1".into(), 100), ("p2".into(), 200)]);
+        let mut list = parse_agents(&agents, &HashMap::new(), &HashMap::new(), &focused);
+        let known: HashSet<String> = list.iter().map(|a| a.pane_id.clone()).collect();
+        list.extend(parse_panes(&panes, &HashMap::new(), &HashMap::new(), &known));
+        sort_agents(&mut list, &focused);
+        let order: Vec<_> = list.iter().map(|a| a.pane_id.as_str()).collect();
+        // p2 has no agent but was focused more recently than p1, so it leads anyway.
+        assert_eq!(order, vec!["p2", "p1"]);
     }
 }
