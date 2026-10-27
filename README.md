@@ -5,7 +5,7 @@ tab, and every open todo in your notes. While it is open, agents, tabs and todos
 refresh every 2 seconds without moving your selection.
 
 ```
- Agents   × 1  ✓ 2  ◐ 1  ○ 2  · 3
+ Agents   Todo  Tab ⇄   × 1  ✓ 2  ◐ 1  ○ 2  · 3
 ──────────────────────────────────────────────────────────────────────
  > / to filter                                                      6
 ──────────────────────────────────────────────────────────────────────
@@ -16,7 +16,12 @@ refresh every 2 seconds without moving your selection.
  4. · notes                     web
 ──────────────────────────────────────────────────────────────────────
   u open GitHub link  / filter  j/k ↑/↓ move  Enter go to tab  …
- Todo   ☐ 24
+```
+
+Tab flips to the Todo page, full size:
+
+```
+ Agents   Todo  Tab ⇄     ☐ 24
 ──────────────────────────────────────────────────────────────────────
  > pass▏                                                         1/24
 ──────────────────────────────────────────────────────────────────────
@@ -70,8 +75,8 @@ refresh every 2 seconds without moving your selection.
   that worktree. Needs `gh`, signed in to an account that can see the repo.
 - **`/`** filters the panel you are in, like Herdr Recent Navigator: type to narrow the list
   (every word must match), Esc stops typing and keeps the filter, Esc again clears it.
-- Agents sit on top and todos below, both full width. Each panel's footer lists every key
-  it takes.
+- Agents and todos are two full-size pages. Both tabs show at the top, the open one filled;
+  `Tab` switches. Each page's footer lists every key it takes.
 
 ## Install
 
@@ -119,7 +124,7 @@ description = "Overview: agents and todos"
 | `/` | Filter this panel; typed keys go to the filter |
 | `j` / `k`, `↑` / `↓` | Move |
 | `g` / `G`, `Home` / `End` | Top / bottom |
-| `Tab` | Switch between agents and todos |
+| `Tab` | Switch between the Agents and Todo pages |
 | `h` / `l`, `←` / `→` | Previous / next todo group (Todo panel); the overview reopens on it |
 | `Enter` on an agent | Jump to it |
 | `Enter` on a todo | Its issue worktree, its repo's worktree, or else its Claude tab |

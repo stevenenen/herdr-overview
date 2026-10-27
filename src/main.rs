@@ -1163,7 +1163,7 @@ fn groups(todos: &[Todo]) -> Vec<(String, usize)> {
     list
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 enum Focus {
     Agents,
     Todos,
@@ -1649,14 +1649,22 @@ fn fit(text: &str, width: usize) -> String {
     out + &" ".repeat(pad)
 }
 
-/// A section title like a Recent Navigator tab: filled when focused.
-fn title(text: &str, focused: bool) -> Span<'static> {
-    let style = if focused {
-        Style::new().fg(palette::BG).bg(palette::ACCENT).bold()
-    } else {
-        Style::new().fg(palette::ACCENT)
+/// Both page tabs, the open one filled, so it is clear there are two pages and Tab switches.
+fn tabs(focus: Focus) -> Vec<Span<'static>> {
+    let tab = |text: &str, open: bool| {
+        let style = if open {
+            Style::new().fg(palette::BG).bg(palette::ACCENT).bold()
+        } else {
+            Style::new().fg(palette::SUBTEXT).bg(palette::SELECTED)
+        };
+        Span::styled(format!(" {text} "), style)
     };
-    Span::styled(format!(" {text} "), style)
+    vec![
+        tab("Agents", focus == Focus::Agents),
+        Span::raw(" "),
+        tab("Todo", focus == Focus::Todos),
+        Span::styled(" Tab ⇄", Style::new().fg(palette::SUBTEXT)),
+    ]
 }
 
 fn header(text: &str) -> Span<'static> {
@@ -1716,23 +1724,21 @@ fn draw(f: &mut Frame, app: &mut App) {
         );
     }
 
-    // Agents on top, todos below, both full width so tab and title have room.
-    let h = body.height * 2 / 5;
-    let [left, right] = Layout::vertical([Constraint::Length(h), Constraint::Fill(1)]).areas(body);
-    let [left, left_keys] = Layout::vertical([
+    // One page at a time, full size; Tab flips between them.
+    let keys = match app.focus {
+        Focus::Agents => AGENT_KEYS,
+        Focus::Todos => TODO_KEYS,
+    };
+    let [page, page_keys] = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Length(hint_lines(AGENT_KEYS, left.width).len() as u16 + 1),
+        Constraint::Length(hint_lines(keys, body.width).len() as u16 + 1),
     ])
-    .areas(left);
-    let [right, right_keys] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(hint_lines(TODO_KEYS, right.width).len() as u16 + 1),
-    ])
-    .areas(right);
-    draw_agents(f, app, left);
-    draw_todos(f, app, right);
-    draw_hints(f, left_keys, AGENT_KEYS);
-    draw_hints(f, right_keys, TODO_KEYS);
+    .areas(body);
+    match app.focus {
+        Focus::Agents => draw_agents(f, app, page),
+        Focus::Todos => draw_todos(f, app, page),
+    }
+    draw_hints(f, page_keys, keys);
 }
 
 /// Title strip plus a column header, as in Recent Navigator. Returns the list area.
@@ -1803,7 +1809,8 @@ fn number(i: usize) -> Span<'static> {
 }
 
 fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
-    let mut top = vec![title("Agents", app.focus == Focus::Agents), Span::raw("  ")];
+    let mut top = tabs(app.focus);
+    top.push(Span::raw("   "));
     for status in Status::ALL {
         let n = app.agents.iter().filter(|a| a.status == status).count();
         if n > 0 {
@@ -1885,13 +1892,12 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_todos(f: &mut Frame, app: &mut App, area: Rect) {
-    let top = Line::from(vec![
-        title("Todo", app.focus == Focus::Todos),
-        Span::styled(
-            format!("  ☐ {}", app.todos.len()),
-            Style::new().fg(palette::TEXT).bold(),
-        ),
-    ]);
+    let mut top = tabs(app.focus);
+    top.push(Span::styled(
+        format!("     ☐ {}", app.todos.len()),
+        Style::new().fg(palette::TEXT).bold(),
+    ));
+    let top = Line::from(top);
     if !app.configured {
         let list_area = section(f, area, top, Line::default(), Line::default());
         let hint = format!(
@@ -2023,7 +2029,7 @@ const AGENT_KEYS: &[(&str, &str)] = &[
     ("j/k ↑/↓", "move"),
     ("g/G", "top/bottom"),
     ("Enter", "go to agent"),
-    ("Tab", "to todos"),
+    ("Tab", "todo page"),
     ("Esc", "back / close"),
 ];
 
@@ -2037,7 +2043,7 @@ const TODO_KEYS: &[(&str, &str)] = &[
     ("Space", "cross out"),
     ("o", "open note"),
     ("a", "add todo below"),
-    ("Tab", "to agents"),
+    ("Tab", "agents page"),
     ("Esc", "back / close"),
 ];
 
@@ -2155,6 +2161,47 @@ mod tests {
         assert_eq!(app.agent_list.selected(), Some(1));
         app.select_other_agent(Some("shell"));
         assert_eq!(app.agent_list.selected(), Some(0));
+    }
+
+    #[test]
+    fn one_page_at_a_time_with_both_tabs_shown() {
+        let mut app = App {
+            agents: vec![],
+            todos: vec![],
+            groups: vec![],
+            group: 0,
+            focus: Focus::Agents,
+            agent_list: ListState::default(),
+            todo_list: ListState::default(),
+            todo_offset: 0,
+            configured: true,
+            memory: Memory::default(),
+            agent_filter: String::new(),
+            todo_filter: String::new(),
+            typing: false,
+            link: None,
+            notice: None,
+            repo_dirs: vec![],
+            adding: None,
+            load_ms: 0,
+        };
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        for (focus, shown, hidden) in [
+            (Focus::Agents, "todo page", "agents page"),
+            (Focus::Todos, "agents page", "todo page"),
+        ] {
+            app.focus = focus;
+            term.draw(|f| draw(f, &mut app)).unwrap();
+            let screen: String = term
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(screen.contains(" Agents   Todo  Tab ⇄"));
+            assert!(screen.contains(shown) && !screen.contains(hidden));
+        }
     }
 
     #[test]
