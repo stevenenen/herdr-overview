@@ -5,7 +5,7 @@ tab, and every open todo in your notes. While it is open, agents, tabs and todos
 refresh every 2 seconds without moving your selection.
 
 ```
- Agents   Todo  Tab ⇄   × 1  ✓ 2  ◐ 1  ○ 2  · 3
+ Agents   Todo  Tab ⇄
 ──────────────────────────────────────────────────────────────────────
  > / to filter                                                      6
 ──────────────────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ refresh every 2 seconds without moving your selection.
 Tab flips to the Todo page, full size:
 
 ```
- Agents   Todo  Tab ⇄     ☐ 24
+ Agents   Todo  Tab ⇄
 ──────────────────────────────────────────────────────────────────────
  > pass▏                                                         1/24
 ──────────────────────────────────────────────────────────────────────

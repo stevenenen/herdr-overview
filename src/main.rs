@@ -1811,15 +1811,6 @@ fn number(i: usize) -> Span<'static> {
 fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
     let mut top = tabs(app.focus);
     top.push(Span::raw("   "));
-    for status in Status::ALL {
-        let n = app.agents.iter().filter(|a| a.status == status).count();
-        if n > 0 {
-            top.push(Span::styled(
-                format!("{} {n}  ", status.icon()),
-                Style::new().fg(status.color()).bold(),
-            ));
-        }
-    }
     top.push(Span::styled(
         format!("{}ms  ", app.load_ms),
         Style::new().fg(palette::SUBTEXT),
@@ -1892,12 +1883,7 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_todos(f: &mut Frame, app: &mut App, area: Rect) {
-    let mut top = tabs(app.focus);
-    top.push(Span::styled(
-        format!("     ☐ {}", app.todos.len()),
-        Style::new().fg(palette::TEXT).bold(),
-    ));
-    let top = Line::from(top);
+    let top = Line::from(tabs(app.focus));
     if !app.configured {
         let list_area = section(f, area, top, Line::default(), Line::default());
         let hint = format!(
