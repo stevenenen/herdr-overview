@@ -1283,7 +1283,8 @@ impl App {
             .collect()
     }
 
-    /// Grouped by area and topic, by name, each topic in note order. Nothing you press moves a todo.
+    /// Grouped by area and topic, by name, each topic newest first (lowest in the note on top).
+    /// Nothing you press moves a todo.
     fn visible_todos(&self) -> Vec<&Todo> {
         let mut list: Vec<&Todo> = self
             .todos
@@ -1292,7 +1293,7 @@ impl App {
             .filter(|t| matches(&self.todo_filter, &[&t.text, &t.group, &t.topic]))
             .collect();
         list.sort_by(|a, b| {
-            (&a.group, &a.topic, &a.file, a.line).cmp(&(&b.group, &b.topic, &b.file, b.line))
+            (&a.group, &a.topic, &a.file, b.line).cmp(&(&b.group, &b.topic, &b.file, a.line))
         });
         list
     }
@@ -2218,10 +2219,10 @@ mod tests {
         let order = |app: &App| -> Vec<String> {
             app.visible_todos().iter().map(|t| t.text.clone()).collect()
         };
-        assert_eq!(order(&app), vec!["x", "early", "late"]);
+        assert_eq!(order(&app), vec!["x", "late", "early"]);
         app.memory.tabs.insert("late".into(), "w1:t1".into());
         app.memory.toggle_crossed("late");
-        assert_eq!(order(&app), vec!["x", "early", "late"]);
+        assert_eq!(order(&app), vec!["x", "late", "early"]);
     }
 
     #[test]

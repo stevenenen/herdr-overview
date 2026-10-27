@@ -43,7 +43,7 @@ refresh every 2 seconds without moving your selection.
     else `other`.
   - the **topic** (a `▸` header in the list) is the folder or note one level down:
     `Work/Launch/plan.md` is topic `Launch`. A `TODO.md` right in an area folder is `inbox`.
-- Areas and topics are listed by name, each topic in note order. Nothing you press moves a todo.
+- Areas and topics are listed by name, each topic newest first (lowest in the note on top). Nothing you press moves a todo.
 - **Enter on a todo** picks where to work on it:
   - a GitHub issue or pull request link in the todo opens that worktree, like `u`;
   - a topic named after a repo in `[repos] dirs` (`agentic-development` finds
