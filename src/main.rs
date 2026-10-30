@@ -110,8 +110,8 @@ struct Agent {
     title: String,
     pane_id: String,
     tab_id: String,
-    /// Percentage of the context window in use, for Claude Code agents.
-    context: Option<u8>,
+    /// Tokens of context in use, for Claude Code agents.
+    context: Option<u64>,
 }
 
 #[derive(Debug, PartialEq, Default, Clone)]
@@ -215,7 +215,7 @@ fn parse_agents(
                 context: (s("agent") == "claude")
                     .then(|| a["agent_session"]["value"].as_str())
                     .flatten()
-                    .and_then(context_percent),
+                    .and_then(context_tokens),
             }
         })
         .collect();
@@ -270,33 +270,36 @@ fn transcript(session: &str) -> Option<PathBuf> {
 }
 
 /// Context in use after the last main-thread reply: its input plus cached input tokens.
-// ponytail: transcripts don't record the window size; haiku is taken as 200k, the rest as 1M.
-// Upgrade path: read the window from Claude Code's status line JSON if Herdr ever exposes it.
-fn context_from_tail(tail: &str) -> Option<u8> {
+fn context_from_tail(tail: &str) -> Option<u64> {
     tail.lines().rev().find_map(|line| {
         let v: Value = serde_json::from_str(line).ok()?;
         if v["type"] != "assistant" || v["isSidechain"] == true {
             return None;
         }
         let usage = v["message"].get("usage")?;
-        let used: u64 = [
-            "input_tokens",
-            "cache_creation_input_tokens",
-            "cache_read_input_tokens",
-        ]
-        .iter()
-        .filter_map(|k| usage[k].as_u64())
-        .sum();
-        let window = if v["message"]["model"].as_str()?.contains("haiku") {
-            200_000
-        } else {
-            1_000_000
-        };
-        Some((used * 100 / window).min(100) as u8)
+        Some(
+            [
+                "input_tokens",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+            ]
+            .iter()
+            .filter_map(|k| usage[k].as_u64())
+            .sum(),
+        )
     })
 }
 
-fn context_percent(session: &str) -> Option<u8> {
+/// `87k`, `1.2M`: four columns at most.
+fn tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1e6)
+    } else {
+        format!("{}k", n / 1000)
+    }
+}
+
+fn context_tokens(session: &str) -> Option<u64> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = fs::File::open(transcript(session)?).ok()?;
     // Only the end matters; the last reply is well within the final 256 KB.
@@ -1902,10 +1905,7 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled(fit(&a.tab, tab_w), Style::new().fg(text).bold()),
                 gap(),
                 Span::styled(
-                    fit(
-                        &a.context.map(|p| format!("{p:>3}%")).unwrap_or_default(),
-                        ctx_w,
-                    ),
+                    format!("{:>ctx_w$}", a.context.map(tokens).unwrap_or_default()),
                     Style::new().fg(palette::SUBTEXT),
                 ),
                 gap(),
@@ -2511,7 +2511,9 @@ mod tests {
             r#"{"type":"user","message":{}}"#,
         ]
         .join("\n");
-        assert_eq!(context_from_tail(&tail), Some(10));
+        assert_eq!(context_from_tail(&tail), Some(100_000));
+        assert_eq!(tokens(87_654), "87k");
+        assert_eq!(tokens(1_234_567), "1.2M");
         assert_eq!(context_from_tail("not json"), None);
     }
 

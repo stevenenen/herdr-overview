@@ -10,9 +10,9 @@ refresh every 2 seconds without moving your selection.
  > / to filter                                                      6
 ──────────────────────────────────────────────────────────────────────
       Tab                       Ctx   Workspace
- 1. × Fix login test             42%  api
- 2. ✓ Update README               7%  web
- 3. ◐ main                       63%  api
+ 1. × Fix login test             84k  api
+ 2. ✓ Update README               7k  web
+ 3. ◐ main                      1.2M  api
  4. · notes                           web
 ──────────────────────────────────────────────────────────────────────
   / filter  j/k ↑/↓ move  Enter go to tab  …
@@ -37,10 +37,10 @@ Tab flips to the Todo page, full size:
 
 - **Agents** lists every open tab, agent or not — sorted most recently focused first; rows
   never focused follow, by urgency: blocked, done, working, idle, then plain tabs with no
-  agent (`·`). Same symbols and colors as the Herdr sidebar. **Ctx** is how much of a Claude
-  Code agent's context window is in use, read from its session transcript (Haiku counted as
-  a 200k window, other models as 1M). The overview starts on the most recent agent other
-  than the one you are in, so `prefix+a` then Enter jumps back to it. The
+  agent (`·`). Same symbols and colors as the Herdr sidebar. **Ctx** is how many tokens of
+  context a Claude Code agent is carrying, read from its session transcript. The overview
+  starts on the most recent agent other than the one you are in, so `prefix+a` then Enter
+  jumps back to it. The
   one you are in is drawn in blue. Enter jumps to the tab; for a plain tab this just switches
   to it, since there is no agent to resume.
 - **Todos** are every open Markdown checkbox (`- [ ] ...`) in the folders you configure.
