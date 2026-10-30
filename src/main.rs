@@ -294,6 +294,15 @@ fn context_from_tail(tail: &str) -> Option<u64> {
     })
 }
 
+/// Green while small, yellow from 100k, red from 250k.
+fn context_color(n: u64) -> Color {
+    match n {
+        ..100_000 => palette::GREEN,
+        ..250_000 => palette::YELLOW,
+        _ => palette::RED,
+    }
+}
+
 /// `87k`, `1.2M`: four columns at most.
 fn tokens(n: u64) -> String {
     if n >= 1_000_000 {
@@ -1910,7 +1919,7 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
                 gap(),
                 Span::styled(
                     format!("{:>ctx_w$}", a.context.map(tokens).unwrap_or_default()),
-                    Style::new().fg(palette::SUBTEXT),
+                    Style::new().fg(a.context.map_or(palette::SUBTEXT, context_color)),
                 ),
                 gap(),
                 Span::styled(fit(&a.workspace, ws_w), Style::new().fg(text)),
@@ -2518,6 +2527,9 @@ mod tests {
         assert_eq!(context_from_tail(&tail), Some(100_000));
         assert_eq!(tokens(87_654), "87k");
         assert_eq!(tokens(1_234_567), "1.2M");
+        assert_eq!(context_color(99_999), palette::GREEN);
+        assert_eq!(context_color(100_000), palette::YELLOW);
+        assert_eq!(context_color(250_000), palette::RED);
         assert_eq!(context_from_tail("not json"), None);
         let compacted = format!(
             "{tail}\n{}",
