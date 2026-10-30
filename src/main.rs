@@ -110,6 +110,8 @@ struct Agent {
     title: String,
     pane_id: String,
     tab_id: String,
+    /// Percentage of the context window in use, for Claude Code agents.
+    context: Option<u8>,
 }
 
 #[derive(Debug, PartialEq, Default, Clone)]
@@ -210,6 +212,10 @@ fn parse_agents(
                 title: s("terminal_title_stripped"),
                 pane_id: s("pane_id"),
                 tab_id: s("tab_id"),
+                context: (s("agent") == "claude")
+                    .then(|| a["agent_session"]["value"].as_str())
+                    .flatten()
+                    .and_then(context_percent),
             }
         })
         .collect();
@@ -243,9 +249,63 @@ fn parse_panes(
                 title: String::new(),
                 pane_id,
                 tab_id,
+                context: None,
             })
         })
         .collect()
+}
+
+/// The Claude Code transcript of a session: `<config>/projects/<cwd slug>/<id>.jsonl`.
+fn transcript(session: &str) -> Option<PathBuf> {
+    let config = std::env::var("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|_| std::env::var("HOME").map(|h| PathBuf::from(h).join(".claude")))
+        .ok()?;
+    let file = format!("{session}.jsonl");
+    fs::read_dir(config.join("projects"))
+        .ok()?
+        .flatten()
+        .map(|d| d.path().join(&file))
+        .find(|p| p.is_file())
+}
+
+/// Context in use after the last main-thread reply: its input plus cached input tokens.
+// ponytail: transcripts don't record the window size; haiku is taken as 200k, the rest as 1M.
+// Upgrade path: read the window from Claude Code's status line JSON if Herdr ever exposes it.
+fn context_from_tail(tail: &str) -> Option<u8> {
+    tail.lines().rev().find_map(|line| {
+        let v: Value = serde_json::from_str(line).ok()?;
+        if v["type"] != "assistant" || v["isSidechain"] == true {
+            return None;
+        }
+        let usage = v["message"].get("usage")?;
+        let used: u64 = [
+            "input_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        ]
+        .iter()
+        .filter_map(|k| usage[k].as_u64())
+        .sum();
+        let window = if v["message"]["model"].as_str()?.contains("haiku") {
+            200_000
+        } else {
+            1_000_000
+        };
+        Some((used * 100 / window).min(100) as u8)
+    })
+}
+
+fn context_percent(session: &str) -> Option<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = fs::File::open(transcript(session)?).ok()?;
+    // Only the end matters; the last reply is well within the final 256 KB.
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(256 * 1024)))
+        .ok()?;
+    let mut tail = Vec::new();
+    f.read_to_end(&mut tail).ok()?;
+    context_from_tail(&String::from_utf8_lossy(&tail))
 }
 
 fn now_millis() -> u64 {
@@ -1799,14 +1859,18 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
         top.push(Span::raw(" ".repeat(area.width as usize - used)));
         top.extend(legend);
     }
-    // Index, icon, then tab and workspace columns, with a two-space gap between them.
+    // Index, icon, then tab, context and workspace columns, with a two-space gap between them.
+    // The context column comes out of the workspace's share, so the tab column keeps its width.
     let rest = (area.width as usize).saturating_sub(6 + 2);
     let tab_w = rest * 6 / 10;
-    let ws_w = rest - tab_w;
+    let ctx_w = 4;
+    let ws_w = (rest - tab_w).saturating_sub(ctx_w + 2);
     let gap = || Span::raw("  ");
     let columns = Line::from(vec![
         Span::raw("      "),
         header(&fit("Tab", tab_w)),
+        gap(),
+        header(&fit("Ctx", ctx_w)),
         gap(),
         header(&fit("Workspace", ws_w)),
     ]);
@@ -1836,6 +1900,14 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
                     Style::new().fg(a.status.color()),
                 ),
                 Span::styled(fit(&a.tab, tab_w), Style::new().fg(text).bold()),
+                gap(),
+                Span::styled(
+                    fit(
+                        &a.context.map(|p| format!("{p:>3}%")).unwrap_or_default(),
+                        ctx_w,
+                    ),
+                    Style::new().fg(palette::SUBTEXT),
+                ),
                 gap(),
                 Span::styled(fit(&a.workspace, ws_w), Style::new().fg(text)),
             ]))
@@ -2429,6 +2501,18 @@ mod tests {
         assert!(!app.back_out());
         assert!(app.todo_filter.is_empty());
         assert!(app.back_out());
+    }
+
+    #[test]
+    fn context_reads_the_last_main_thread_reply() {
+        let tail = [
+            r#"{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":2,"cache_creation_input_tokens":8,"cache_read_input_tokens":99990}}}"#,
+            r#"{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":190000}}}"#,
+            r#"{"type":"user","message":{}}"#,
+        ]
+        .join("\n");
+        assert_eq!(context_from_tail(&tail), Some(10));
+        assert_eq!(context_from_tail("not json"), None);
     }
 
     #[test]
