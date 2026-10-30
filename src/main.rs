@@ -1587,20 +1587,24 @@ fn run(terminal: &mut DefaultTerminal, process_start: Instant) -> std::io::Resul
 
 /// Tokyo Night, the same dark palette Herdr Recent Navigator uses.
 // ponytail: dark palette only; read Herdr's theme here if a light one is needed.
+/// Terminal colors, not fixed ones: background and text are left to Herdr, which fills them
+/// from its theme, and the rest are the standard named colors.
 mod palette {
     use ratatui::style::Color;
-    pub const BG: Color = Color::Rgb(26, 27, 38);
-    pub const LINE: Color = Color::Rgb(36, 40, 59);
-    pub const SELECTED: Color = Color::Rgb(65, 72, 104);
-    pub const TEXT: Color = Color::Rgb(192, 202, 245);
-    pub const SUBTEXT: Color = Color::Rgb(169, 177, 214);
-    pub const ACCENT: Color = Color::Rgb(122, 162, 247);
-    pub const RED: Color = Color::Rgb(247, 118, 142);
-    pub const YELLOW: Color = Color::Rgb(224, 175, 104);
-    pub const GREEN: Color = Color::Rgb(158, 206, 106);
-    pub const TEAL: Color = Color::Rgb(125, 207, 255);
-    pub const MAUVE: Color = Color::Rgb(187, 154, 247);
-    pub const PEACH: Color = Color::Rgb(255, 158, 100);
+    pub const BG: Color = Color::Reset;
+    /// Text on a colored pill.
+    pub const INK: Color = Color::Black;
+    pub const LINE: Color = Color::DarkGray;
+    pub const SELECTED: Color = Color::DarkGray;
+    pub const TEXT: Color = Color::Reset;
+    pub const SUBTEXT: Color = Color::Gray;
+    pub const ACCENT: Color = Color::Blue;
+    pub const RED: Color = Color::Red;
+    pub const YELLOW: Color = Color::Yellow;
+    pub const GREEN: Color = Color::Green;
+    pub const TEAL: Color = Color::Cyan;
+    pub const MAUVE: Color = Color::Magenta;
+    pub const PEACH: Color = Color::LightRed;
 }
 
 /// Truncates to `width` columns with an ellipsis, then pads to exactly `width`.
@@ -1627,7 +1631,7 @@ fn fit(text: &str, width: usize) -> String {
 fn tabs(focus: Focus) -> Vec<Span<'static>> {
     let tab = |text: &str, open: bool| {
         let style = if open {
-            Style::new().fg(palette::BG).bg(palette::ACCENT).bold()
+            Style::new().fg(palette::INK).bg(palette::ACCENT).bold()
         } else {
             Style::new().fg(palette::SUBTEXT).bg(palette::SELECTED)
         };
@@ -1662,7 +1666,7 @@ fn draw(f: &mut Frame, app: &mut App) {
             Some(text) => Line::from(vec![
                 Span::styled(
                     " New todo ",
-                    Style::new().fg(palette::BG).bg(palette::GREEN).bold(),
+                    Style::new().fg(palette::INK).bg(palette::GREEN).bold(),
                 ),
                 Span::styled(format!(" {text}"), Style::new().fg(palette::TEXT)),
                 Span::styled("▏", Style::new().fg(palette::GREEN)),
@@ -1893,7 +1897,7 @@ fn draw_todos(f: &mut Frame, app: &mut App, area: Rect) {
             let len = if i == 0 { 0 } else { (n * bar_w).div_ceil(max) };
             let selected = i == app.group;
             let name_style = if selected {
-                Style::new().fg(palette::BG).bg(color).bold()
+                Style::new().fg(palette::INK).bg(color).bold()
             } else {
                 Style::new().fg(color)
             };
