@@ -294,10 +294,10 @@ fn context_from_tail(tail: &str) -> Option<u64> {
     })
 }
 
-/// One of 100 steps from green through orange to red, reaching red at 400k.
+/// One of 100 steps from green through orange to red, spread over the 1M context window.
 fn context_color(n: u64) -> Color {
     const STOPS: [(f32, f32, f32); 3] = [(46., 204., 64.), (255., 140., 0.), (230., 30., 30.)];
-    let step = (n * 99 / 400_000).min(99) as f32 / 99.0;
+    let step = (n * 99 / 1_000_000).min(99) as f32 / 99.0;
     let (a, b, t) = if step < 0.5 {
         (STOPS[0], STOPS[1], step * 2.0)
     } else {
@@ -2532,7 +2532,7 @@ mod tests {
         assert_eq!(tokens(87_654), "87k");
         assert_eq!(tokens(1_234_567), "1.2M");
         assert_eq!(context_color(0), Color::Rgb(46, 204, 64));
-        assert_eq!(context_color(400_000), Color::Rgb(230, 30, 30));
+        assert_eq!(context_color(1_000_000), Color::Rgb(230, 30, 30));
         assert_eq!(context_color(9_000_000), Color::Rgb(230, 30, 30));
         assert_eq!(context_from_tail("not json"), None);
         let compacted = format!(
