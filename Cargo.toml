@@ -1,6 +1,6 @@
 [package]
 name = "herdr-overview"
-version = "0.14.0"
+version = "0.14.1"
 edition = "2024"
 description = "One popup that shows which Herdr agents need you and every open todo in your notes."
 license = "MIT"

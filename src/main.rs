@@ -270,9 +270,13 @@ fn transcript(session: &str) -> Option<PathBuf> {
 }
 
 /// Context in use after the last main-thread reply: its input plus cached input tokens.
+/// A compaction since that reply resets it to the size the compaction left behind.
 fn context_from_tail(tail: &str) -> Option<u64> {
     tail.lines().rev().find_map(|line| {
         let v: Value = serde_json::from_str(line).ok()?;
+        if v["subtype"] == "compact_boundary" {
+            return Some(v["compactMetadata"]["postTokens"].as_u64().unwrap_or(0));
+        }
         if v["type"] != "assistant" || v["isSidechain"] == true {
             return None;
         }
@@ -2515,6 +2519,11 @@ mod tests {
         assert_eq!(tokens(87_654), "87k");
         assert_eq!(tokens(1_234_567), "1.2M");
         assert_eq!(context_from_tail("not json"), None);
+        let compacted = format!(
+            "{tail}\n{}",
+            r#"{"type":"system","subtype":"compact_boundary","compactMetadata":{"preTokens":375905,"postTokens":20395}}"#
+        );
+        assert_eq!(context_from_tail(&compacted), Some(20395));
     }
 
     #[test]
