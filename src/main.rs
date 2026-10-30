@@ -294,13 +294,17 @@ fn context_from_tail(tail: &str) -> Option<u64> {
     })
 }
 
-/// Green while small, yellow from 100k, red from 250k.
+/// One of 100 steps from green through orange to red, reaching red at 400k.
 fn context_color(n: u64) -> Color {
-    match n {
-        ..100_000 => palette::GREEN,
-        ..250_000 => palette::YELLOW,
-        _ => palette::RED,
-    }
+    const STOPS: [(f32, f32, f32); 3] = [(46., 204., 64.), (255., 140., 0.), (230., 30., 30.)];
+    let step = (n * 99 / 400_000).min(99) as f32 / 99.0;
+    let (a, b, t) = if step < 0.5 {
+        (STOPS[0], STOPS[1], step * 2.0)
+    } else {
+        (STOPS[1], STOPS[2], step * 2.0 - 1.0)
+    };
+    let mix = |x: f32, y: f32| (x + (y - x) * t).round() as u8;
+    Color::Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
 }
 
 /// `87k`, `1.2M`: four columns at most.
@@ -2527,9 +2531,9 @@ mod tests {
         assert_eq!(context_from_tail(&tail), Some(100_000));
         assert_eq!(tokens(87_654), "87k");
         assert_eq!(tokens(1_234_567), "1.2M");
-        assert_eq!(context_color(99_999), palette::GREEN);
-        assert_eq!(context_color(100_000), palette::YELLOW);
-        assert_eq!(context_color(250_000), palette::RED);
+        assert_eq!(context_color(0), Color::Rgb(46, 204, 64));
+        assert_eq!(context_color(400_000), Color::Rgb(230, 30, 30));
+        assert_eq!(context_color(9_000_000), Color::Rgb(230, 30, 30));
         assert_eq!(context_from_tail("not json"), None);
         let compacted = format!(
             "{tail}\n{}",

@@ -38,10 +38,10 @@ Tab flips to the Todo page, full size:
 - **Agents** lists every open tab, agent or not — sorted most recently focused first; rows
   never focused follow, by urgency: blocked, done, working, idle, then plain tabs with no
   agent (`·`). Same symbols and colors as the Herdr sidebar. **Ctx** is how many tokens of
-  context a Claude Code agent is carrying, read from its session transcript: green under
-  100k, yellow under 250k, red from there. The overview starts on the most recent agent
-  other than the one you are in, so `prefix+a` then Enter jumps back to it. The one you are
-  in is drawn in blue. Enter jumps to the tab; for a plain tab this just switches
+  context a Claude Code agent is carrying, read from its session transcript, colored on a
+  100-step gradient from green through orange to red at 400k. The overview starts on the
+  most recent agent other than the one you are in, so `prefix+a` then Enter jumps back to it.
+  The one you are in is drawn in blue. Enter jumps to the tab; for a plain tab this just switches
   to it, since there is no agent to resume.
 - **Todos** are every open Markdown checkbox (`- [ ] ...`) in the folders you configure.
   Code blocks are skipped. They are grouped two levels deep, from where the note lives:
