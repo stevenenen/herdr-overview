@@ -919,7 +919,7 @@ fn source_workspace(clone: &Path) -> Option<String> {
 }
 
 /// Opens the worktree for an issue or pull request link, with Claude started on it.
-/// Pasting the same link again reopens that worktree instead of creating another.
+/// Opening the same link again reopens that worktree instead of creating another.
 fn open_link(url: &str, repo_dirs: &[PathBuf]) -> Result<(), String> {
     let link = parse_link(url).ok_or("not a GitHub issue or pull request link")?;
     if repo_dirs.is_empty() {
@@ -1186,8 +1186,7 @@ struct App {
     agent_filter: String,
     todo_filter: String,
     typing: bool,
-    /// The GitHub link being typed after `u`, and the last message about it.
-    link: Option<String>,
+    /// The last message about an action, shown in the bar.
     notice: Option<String>,
     repo_dirs: Vec<PathBuf>,
     /// The todo being typed after `a`, added below the selected one.
@@ -1249,7 +1248,6 @@ impl App {
             agent_filter: String::new(),
             todo_filter: String::new(),
             typing: false,
-            link: None,
             notice: None,
             repo_dirs,
             adding: None,
@@ -1489,26 +1487,6 @@ fn run(terminal: &mut DefaultTerminal, process_start: Instant) -> std::io::Resul
             }
             continue;
         }
-        if let Some(link) = app.link.as_mut() {
-            match key.code {
-                KeyCode::Char(c) => link.push(c),
-                KeyCode::Backspace => {
-                    link.pop();
-                }
-                KeyCode::Esc => app.link = None,
-                KeyCode::Enter => {
-                    let url = app.link.take().unwrap_or_default();
-                    app.notice = Some(format!("opening {}…", url.trim()));
-                    terminal.draw(|f| draw(f, &mut app))?;
-                    match open_link(&url, &app.repo_dirs) {
-                        Ok(()) => return Ok(()),
-                        Err(e) => app.notice = Some(e),
-                    }
-                }
-                _ => {}
-            }
-            continue;
-        }
         // While typing a filter, printable keys go to it, so j/k/q can be searched.
         if app.typing {
             match key.code {
@@ -1532,10 +1510,6 @@ fn run(terminal: &mut DefaultTerminal, process_start: Instant) -> std::io::Resul
                 }
             }
             KeyCode::Char('/') => app.typing = true,
-            KeyCode::Char('u') if app.focus == Focus::Agents => {
-                app.link = Some(String::new());
-                app.notice = None;
-            }
             KeyCode::Tab | KeyCode::BackTab => {
                 app.typing = false;
                 app.focus = match app.focus {
@@ -1677,15 +1651,15 @@ fn draw(f: &mut Frame, app: &mut App) {
         Block::new().style(Style::new().bg(palette::BG).fg(palette::TEXT)),
         area,
     );
-    let bar = app.link.is_some() || app.adding.is_some() || app.notice.is_some();
+    let bar = app.adding.is_some() || app.notice.is_some();
     let [bar_area, body] = Layout::vertical([
         Constraint::Length(if bar { 2 } else { 0 }),
         Constraint::Fill(1),
     ])
     .areas(area);
     if bar {
-        let line = match (&app.link, &app.adding) {
-            (_, Some(text)) => Line::from(vec![
+        let line = match &app.adding {
+            Some(text) => Line::from(vec![
                 Span::styled(
                     " New todo ",
                     Style::new().fg(palette::BG).bg(palette::GREEN).bold(),
@@ -1697,19 +1671,7 @@ fn draw(f: &mut Frame, app: &mut App) {
                     Style::new().fg(palette::SUBTEXT),
                 ),
             ]),
-            (Some(link), None) => Line::from(vec![
-                Span::styled(
-                    " GitHub link ",
-                    Style::new().fg(palette::BG).bg(palette::ACCENT).bold(),
-                ),
-                Span::styled(format!(" {link}"), Style::new().fg(palette::TEXT)),
-                Span::styled("▏", Style::new().fg(palette::ACCENT)),
-                Span::styled(
-                    "   Enter open  Esc cancel",
-                    Style::new().fg(palette::SUBTEXT),
-                ),
-            ]),
-            (None, None) => Line::from(Span::styled(
+            None => Line::from(Span::styled(
                 format!(" {}", app.notice.as_deref().unwrap_or_default()),
                 Style::new().fg(palette::YELLOW),
             )),
@@ -2010,7 +1972,6 @@ fn draw_todos(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 const AGENT_KEYS: &[(&str, &str)] = &[
-    ("u", "open GitHub link"),
     ("/", "filter"),
     ("j/k ↑/↓", "move"),
     ("g/G", "top/bottom"),
@@ -2137,7 +2098,6 @@ mod tests {
             agent_filter: String::new(),
             todo_filter: String::new(),
             typing: false,
-            link: None,
             notice: None,
             repo_dirs: vec![],
             adding: None,
@@ -2165,7 +2125,6 @@ mod tests {
             agent_filter: String::new(),
             todo_filter: String::new(),
             typing: false,
-            link: None,
             notice: None,
             repo_dirs: vec![],
             adding: None,
@@ -2243,7 +2202,6 @@ mod tests {
             agent_filter: String::new(),
             todo_filter: String::new(),
             typing: false,
-            link: None,
             notice: None,
             repo_dirs: vec![],
             adding: None,
@@ -2280,7 +2238,6 @@ mod tests {
             agent_filter: String::new(),
             todo_filter: String::new(),
             typing: false,
-            link: None,
             notice: None,
             repo_dirs: vec![],
             adding: None,
@@ -2457,7 +2414,6 @@ mod tests {
             agent_filter: String::new(),
             todo_filter: "dentist".into(),
             typing: true,
-            link: None,
             notice: None,
             repo_dirs: vec![],
             adding: None,

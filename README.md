@@ -15,7 +15,7 @@ refresh every 2 seconds without moving your selection.
  3. ◐ main                      api
  4. · notes                     web
 ──────────────────────────────────────────────────────────────────────
-  u open GitHub link  / filter  j/k ↑/↓ move  Enter go to tab  …
+  / filter  j/k ↑/↓ move  Enter go to tab  …
 ```
 
 Tab flips to the Todo page, full size:
@@ -50,7 +50,13 @@ Tab flips to the Todo page, full size:
     `Work/Launch/plan.md` is topic `Launch`. A `TODO.md` right in an area folder is `inbox`.
 - Areas and topics are listed by name, each topic newest first (lowest in the note on top). Nothing you press moves a todo.
 - **Enter on a todo** picks where to work on it:
-  - a GitHub issue or pull request link in the todo opens that worktree, like `u`;
+  - a GitHub issue or pull request link in the todo opens that worktree. The overview finds
+    your clone of that repo (cloning it into the first `[repos] dirs` folder when there is
+    none) and starts `claude "<link>"`. An issue gets a new branch `issue-<n>-<title words>`
+    from the latest default branch; a pull request checks out its own branch. The workspace
+    and tab are labeled `#<n> <title>`, and Enter again goes back to that worktree. Needs `gh`,
+    signed in to an account that can see the repo. To open a link that is not in a todo, use
+    `u` in Herdr Folders;
   - a topic named after a repo in `[repos] dirs` (`agentic-development` finds
     `acme-agentic-development`) opens a worktree there on branch `todo-<words>`, Claude
     started on the todo. Enter again reopens it;
@@ -67,12 +73,6 @@ Tab flips to the Todo page, full size:
   only key that writes to your notes.
 - Links, cross-outs and focus times live in the plugin's state directory
   (`$HERDR_PLUGIN_STATE_DIR`). A `pane.focused` hook records when you last focused each pane.
-- **`u`** opens a GitHub issue or pull request link: paste it, press Enter. The overview finds
-  your clone of that repo (cloning it into the first `[repos] dirs` folder when there is none), then opens a Herdr worktree for it and starts `claude "<link>"`:
-  - an issue gets a new branch `issue-<n>-<title words>` from the latest default branch;
-  - a pull request checks out its own branch.
-  The workspace and tab are labeled `#<n> <title>`. Pasting the same link again goes back to
-  that worktree. Needs `gh`, signed in to an account that can see the repo.
 - **`/`** filters the panel you are in, like Herdr Recent Navigator: type to narrow the list
   (every word must match), Esc stops typing and keeps the filter, Esc again clears it.
 - Agents and todos are two full-size pages. Both tabs show at the top, the open one filled;
@@ -96,7 +96,8 @@ dirs = ["~/notes"]          # any folders of Markdown files, scanned recursively
 TOML
 ```
 
-For `u`, also list the folders that hold your git clones (each clone directly inside):
+For todos that name a repo or hold a GitHub link, also list the folders that hold your git
+clones (each clone directly inside):
 
 ```toml
 [repos]
@@ -120,7 +121,6 @@ description = "Overview: agents and todos"
 
 | Key | Action |
 | --- | --- |
-| `u` | Open a GitHub issue or pull request link as a worktree (Agents panel) |
 | `/` | Filter this panel; typed keys go to the filter |
 | `j` / `k`, `↑` / `↓` | Move |
 | `g` / `G`, `Home` / `End` | Top / bottom |
